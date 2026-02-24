@@ -1,0 +1,27 @@
+# Environments
+ort311/
+venv/
+.env
+
+# Python Bytecode
+__pycache__/
+*.pyc
+
+# ML Models (Large Binaries)
+*.pt
+*.onnx
+*.weights
+*.engine
+
+# Media & Datasets
+*.mp4
+*.mkv
+*.mov
+*.jpg
+*.jpeg
+*.png
+datasets/
+runs/
+
+# macOS System Files
+.DS_Store
