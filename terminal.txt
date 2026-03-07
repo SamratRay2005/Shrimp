@@ -1,0 +1,29 @@
+run.py
+
+samratray@MacBook-Air-4  ~/Desktop/IIITA _ Object Tracking  python run.py
+🚀 Initializing ONNX & RL Policy on Apple Silicon...
+*************** EP Error ***************
+EP Error /Users/cloudtest/vss/_work/1/s/onnxruntime/core/providers/coreml/coreml_options.cc:72 void onnxruntime::CoreMLOptions::ValidateAndParseProviderOption(const ProviderOptions &) Invalid value for option `MLComputeUnits`: CPU_AND_GPU
+ when using [('CoreMLExecutionProvider', {'MLComputeUnits': 'CPU_AND_GPU'}), 'CPUExecutionProvider']
+Falling back to ['CPUExecutionProvider'] and retrying.
+****************************************
+2026-03-03 00:16:37.905 Python[30436:960333] WARNING: Secure coding is not enabled for restorable state! Enable secure coding by implementing NSApplicationDelegate.applicationSupportsSecureRestorableState: and returning YES.
+
+✅ Final Counts -> Up: 1127, Down: 132
+Avg Tracker FPS: 38
+ samratray@MacBook-Air-4  ~/Desktop/IIITA _ Object Tracking  
+
+
+
+
+ old_run.py
+
+  ✘ samratray@MacBook-Air-4  ~/Desktop/IIITA _ Object Tracking  python old_run.py
+*************** EP Error ***************
+EP Error /Users/cloudtest/vss/_work/1/s/onnxruntime/core/providers/coreml/coreml_options.cc:72 void onnxruntime::CoreMLOptions::ValidateAndParseProviderOption(const ProviderOptions &) Invalid value for option `MLComputeUnits`: CPU_AND_GPU
+ when using [('CoreMLExecutionProvider', {'MLComputeUnits': 'CPU_AND_GPU'}), 'CPUExecutionProvider']
+Falling back to ['CPUExecutionProvider'] and retrying.
+****************************************
+2026-03-03 00:40:08.102 Python[33821:984021] WARNING: Secure coding is not enabled for restorable state! Enable secure coding by implementing NSApplicationDelegate.applicationSupportsSecureRestorableState: and returning YES.
+
+✅ Final Counts -> Up: 584, Down: 292
