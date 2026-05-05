@@ -16,7 +16,7 @@ Avg Tracker FPS: 38
 
 
 
- old_run.py
+old_run.py
 
   ✘ samratray@MacBook-Air-4  ~/Desktop/IIITA _ Object Tracking  python old_run.py
 *************** EP Error ***************
