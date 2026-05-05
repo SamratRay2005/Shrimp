@@ -1,202 +1,313 @@
 import cv2
 import numpy as np
 import onnxruntime as ort
-from collections import defaultdict
-import sys
-import os
-import time
+import torch
+import torch.nn as nn
+import math
 
-# ===================== SETUP IMPORT =====================
-sys.path.append(os.path.join(os.getcwd(), "OC_SORT"))
-
-try:
-    from trackers.ocsort_tracker.ocsort import OCSort
-    print("✅ Successfully loaded local OC-SORT.")
-except ImportError as e:
-    print(f"\n[ERROR] Could not import OCSort. {e}")
-    exit()
-
-# ===================== Config =====================
+# ===================== CONFIG =====================
 INPUT_W = 640
 INPUT_H = 640
 SCORE_THRES = 0.25
 NMS_IOU = 0.30
 DET_EVERY_N = 1
+
 MODEL_PATH = "last.onnx"
 VIDEO_PATH = "IMG_9386.mp4"
+POLICY_PATH = "shrimp_tracker_policy.pth"
 
-# Set this to False if the Mac GPU still rejects the model's operations.
-TRY_COREML = True 
+GATE_RADIUS = 150.0
 
-# ===================== Logic: NMS =====================
-def nms_indices(boxes, scores, score_thr, iou_thr):
-    valid_indices = [i for i, s in enumerate(scores) if s >= score_thr]
-    valid_indices.sort(key=lambda i: scores[i], reverse=True)
-    
-    keep = []
-    removed = [False] * len(valid_indices)
-    
-    for i in range(len(valid_indices)):
-        if removed[i]: continue
-        idx_a = valid_indices[i]
-        keep.append(idx_a)
-        box_a = boxes[idx_a]
-        area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-        
-        for j in range(i + 1, len(valid_indices)):
-            if removed[j]: continue
-            idx_b = valid_indices[j]
-            box_b = boxes[idx_b]
-            xx1, yy1 = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
-            xx2, yy2 = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
-            w, h = max(0.0, xx2 - xx1), max(0.0, yy2 - yy1)
-            inter = w * h
-            area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-            union = area_a + area_b - inter + 1e-6
-            if (inter / union) > iou_thr:
-                removed[j] = True
-    return keep
+# ===================== Q-NETWORK =====================
 
-# ===================== Logic: Line Counter =====================
-class LineCounter:
-    def __init__(self, ptA, ptB):
+
+class QNetwork(nn.Module):
+    def __init__(self):
+        super(QNetwork, self).__init__()
+        self.fc1 = nn.Linear(5, 64)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(64, 32)
+        self.relu2 = nn.ReLU()
+        self.out = nn.Linear(32, 1)
+
+    def forward(self, x):
+        x = self.relu1(self.fc1(x))
+        x = self.relu2(self.fc2(x))
+        return self.out(x)
+
+# ===================== KALMAN FILTER =====================
+
+
+class SimpleKF:
+    def __init__(self, cx, cy):
+        self.x = np.array([cx, cy, 0, 0], dtype=np.float32)
+        self.P = np.eye(4, dtype=np.float32) * 10.0
+
+        self.F = np.array([[1, 0, 1, 0],
+                           [0, 1, 0, 1],
+                           [0, 0, 1, 0],
+                           [0, 0, 0, 1]], dtype=np.float32)
+
+        self.H = np.array([[1, 0, 0, 0],
+                           [0, 1, 0, 0]], dtype=np.float32)
+
+        self.R = np.eye(2, dtype=np.float32) * 5.0
+        self.Q = np.eye(4, dtype=np.float32) * 1.0
+
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.x[0], self.x[1]
+
+    def update(self, cx, cy):
+        z = np.array([cx, cy], dtype=np.float32)
+        y = z - (self.H @ self.x)
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        self.x = self.x + (K @ y)
+        self.P = (np.eye(4) - K @ self.H) @ self.P
+
+# ===================== HYSTERESIS COUNTER =====================
+
+
+class VectorHysteresisCounter:
+    def __init__(self, ptA, ptB, buffer_width=30.0):
         self.A = np.array(ptA, dtype=np.float32)
         self.B = np.array(ptB, dtype=np.float32)
+        self.buffer_width = buffer_width
+        self.AB = self.B - self.A
+        self.length = np.linalg.norm(self.AB)
+
         self.up = 0
         self.down = 0
-        self.dist_thresh = 15.0 
-        self.cooldown_frames = 10
-        self.state = defaultdict(lambda: {'last_sign': 0, 'last_frame': -999999})
 
-    def update(self, track_id, center, frame_idx):
-        AB = self.B - self.A
+    def get_state(self, center):
         AP = center - self.A
-        length = np.linalg.norm(AB)
-        if length < 1e-6: return
-        cross_z = AB[0] * AP[1] - AB[1] * AP[0]
-        sd = cross_z / length
-        sign = 1 if sd > 0 else (-1 if sd < 0 else 0)
-        ts = self.state[track_id]
-        if ts['last_sign'] == 0:
-            ts['last_sign'] = sign
-            return
-        if sign != 0 and sign != ts['last_sign']:
-            if abs(sd) <= self.dist_thresh and (frame_idx - ts['last_frame']) > self.cooldown_frames:
-                if ts['last_sign'] < 0 and sign > 0: self.up += 1
-                elif ts['last_sign'] > 0 and sign < 0: self.down += 1
-                ts['last_frame'] = frame_idx
-        ts['last_sign'] = sign
+        cross_z = self.AB[0] * AP[1] - self.AB[1] * AP[0]
+        sd = cross_z / self.length
+
+        if sd > self.buffer_width:
+            return 0
+        elif sd < -self.buffer_width:
+            return 2
+        else:
+            return 1
 
     def draw(self, img):
-        cv2.line(img, tuple(self.A.astype(int)), tuple(self.B.astype(int)), (0, 255, 255), 2)
-        cv2.putText(img, f"Up: {self.up}  Down: {self.down}", (12, 80), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        A_int, B_int = tuple(self.A.astype(int)), tuple(self.B.astype(int))
+        cv2.line(img, A_int, B_int, (0, 255, 255), 2)
 
-# ===================== Main =====================
-def main():
-    print("🚀 Initializing ONNX Runtime...")
-    
-    providers = ['CPUExecutionProvider']
-    if TRY_COREML:
-        # Crucial Fix: Bypassing the Neural Engine (ANE) to stop the 0-dimension Slice crash.
-        coreml_options = {
-            'MLComputeUnits': 'CPU_AND_GPU',
-        }
-        providers = [('CoreMLExecutionProvider', coreml_options), 'CPUExecutionProvider']
+        # Draw buffer zone lines (THIS WAS MISSING BEFORE)
+        N = np.array([-self.AB[1], self.AB[0]]) / self.length
+        A1, B1 = self.A + N * self.buffer_width, self.B + N * self.buffer_width
+        A2, B2 = self.A - N * self.buffer_width, self.B - N * self.buffer_width
 
-    try:
-        session = ort.InferenceSession(MODEL_PATH, providers=providers)
-        print(f"✅ Success! Active execution providers: {session.get_providers()}")
-    except Exception as e:
-        print(f"❌ Initialization failed: {e}. Falling back to pure CPU.")
-        session = ort.InferenceSession(MODEL_PATH, providers=['CPUExecutionProvider'])
+        cv2.line(img, tuple(A1.astype(int)), tuple(
+            B1.astype(int)), (0, 100, 100), 1)
+        cv2.line(img, tuple(A2.astype(int)), tuple(
+            B2.astype(int)), (0, 100, 100), 1)
 
-    input_names = [i.name for i in session.get_inputs()]
-    output_names = [o.name for o in session.get_outputs()]
-    
-    cap = cv2.VideoCapture(VIDEO_PATH)
-    if not cap.isOpened():
-        print("❌ Error opening video.")
-        return
+        cv2.putText(img, f"Up: {self.up} Down: {self.down}",
+                    (12, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-    tracker = OCSort(det_thresh=0.0, max_age=100, min_hits=0, iou_threshold=0.1, dist_weight=0.4)
-    counter = LineCounter((450, 303), (480, 1836))
-    
-    frame_idx, overall_time = 0, 0
+# ===================== RL TRACKER =====================
 
-    while cap.isOpened():
-        success, frame = cap.read()
-        if not success: 
-            print("End of stream.")
-            break
-        
-        frame_idx += 1
-        H_orig, W_orig = frame.shape[:2]
-        
-        if frame_idx % DET_EVERY_N == 0:
-            # Preprocessing
-            resized = cv2.resize(frame, (INPUT_W, INPUT_H))
-            input_data = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            input_data = input_data.transpose(2, 0, 1)[np.newaxis, :]
-            orig_size = np.array([[float(W_orig), float(H_orig)]], dtype=np.float32)
 
-            # --- INFERENCE ---
-            try:
-                outputs = session.run(output_names, {
-                    input_names[0]: input_data, 
-                    input_names[1]: orig_size
-                })
-            except Exception as e:
-                print(f"\n[FATAL ERROR] Model inference crashed on the GPU/ANE.")
-                print(f"Error Details: {e}")
-                print("\n👉 FIX: Set 'TRY_COREML = False' at line 28 of this script to run purely on CPU.")
-                break
-            
-            pred_boxes = np.squeeze(outputs[1]) 
-            pred_scores = np.squeeze(outputs[2]) 
-            if pred_scores.ndim == 0:
-                pred_scores, pred_boxes = np.array([pred_scores]), np.array([pred_boxes])
+class RLTracker:
+    def __init__(self, device, counter):
+        self.device = device
+        self.counter = counter
 
-            raw_boxes, raw_scores = [], []
-            for i, score in enumerate(pred_scores):
-                x1, y1, x2, y2 = pred_boxes[i]
-                if (x2 - x1) >= 1 and (y2 - y1) >= 1:
-                    raw_boxes.append([x1, y1, x2, y2])
-                    raw_scores.append(float(score))
-            
-            keep_indices = nms_indices(raw_boxes, raw_scores, SCORE_THRES, NMS_IOU)
-            detections_for_tracker = np.array([[*raw_boxes[k], raw_scores[k]] for k in keep_indices]) if keep_indices else np.empty((0, 5))
+        self.policy = QNetwork().to(device)
+        self.policy.load_state_dict(
+            torch.load(POLICY_PATH, map_location=device))
+        self.policy.eval()
+
+        self.tracks = {}
+        self.next_id = 1
+
+    def get_subregion(self, dx, dy):
+        distance = math.sqrt(dx**2 + dy**2)
+        angle = math.atan2(dy, dx)
+
+        if distance > GATE_RADIUS:
+            return -1
+
+        ring = 0 if distance <= (GATE_RADIUS/2) else 1
+
+        if -math.pi/4 <= angle < math.pi/4:
+            quadrant = 0
+        elif math.pi/4 <= angle < 3*math.pi/4:
+            quadrant = 1
+        elif angle >= 3*math.pi/4 or angle < -3*math.pi/4:
+            quadrant = 2
         else:
-            detections_for_tracker = np.empty((0, 5))
+            quadrant = 3
 
-        # Tracker Update
-        t_start = time.time()
-        tracks = tracker.update(detections_for_tracker, [H_orig, W_orig], [H_orig, W_orig])
-        overall_time += (time.time() - t_start) * 1000
+        return ring*4 + quadrant
 
-        for track in tracks:
-            if len(track) < 5: continue
-            x1, y1, x2, y2, track_id = track[:5]
-            center = np.array([(x1+x2)/2, (y1+y2)/2])
-            counter.update(int(track_id), center, frame_idx)
-            
-            # Draw bounding box
-            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (3, 155, 229), 2)
-            
-            # Draw the ID label
-            cv2.putText(frame, f"ID: {int(track_id)}", (int(x1), max(0, int(y1)-5)), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (115, 115, 229), 2, cv2.LINE_AA)
+    def process_frame(self, detections):
+        unmatched = detections.copy()
+        active = []
+
+        for tid, data in list(self.tracks.items()):
+            kf = data['kf']
+            pred_cx, pred_cy = kf.predict()
+
+            prev_cx = data.get('prev_cx', pred_cx)
+            prev_cy = data.get('prev_cy', pred_cy)
+
+            vx = pred_cx - prev_cx
+            vy = pred_cy - prev_cy
+
+            candidates = []
+
+            for i, det in enumerate(unmatched):
+                dx = det['cx'] - pred_cx
+                dy = det['cy'] - pred_cy
+                dist = math.sqrt(dx*dx + dy*dy)
+
+                if dist <= GATE_RADIUS:
+                    candidates.append({
+                        'det_idx': i,
+                        'dx': dx,
+                        'dy': dy,
+                        'region_id': self.get_subregion(dx, dy),
+                        'vx': vx,
+                        'vy': vy
+                    })
+
+            if candidates:
+                feats = [[
+                    c['dx']/GATE_RADIUS,
+                    c['dy']/GATE_RADIUS,
+                    c['region_id']/7.0,
+                    c['vx']/GATE_RADIUS,
+                    c['vy']/GATE_RADIUS
+                ] for c in candidates]
+
+                tensor = torch.FloatTensor(feats).to(self.device)
+
+                with torch.no_grad():
+                    q = self.policy(tensor).cpu().numpy().flatten()
+
+                best = np.argmax(q)
+                det_idx = candidates[best]['det_idx']
+                det = unmatched[det_idx]
+
+                kf.update(det['cx'], det['cy'])
+
+                data['prev_cx'] = det['cx']
+                data['prev_cy'] = det['cy']
+                data['box'] = det['box']
+                data['missed'] = 0
+
+                # 🔥 FULL ORIGINAL HYSTERESIS LOGIC RESTORED
+                new_state = self.counter.get_state(
+                    np.array([det['cx'], det['cy']]))
+                old_state = data.get('state', -1)
+
+                if old_state == 0 and new_state == 2:
+                    self.counter.down += 1
+                elif old_state == 1 and new_state == 2:
+                    self.counter.down += 1
+                elif old_state == 2 and new_state == 0:
+                    self.counter.up += 1
+                elif old_state == 1 and new_state == 0:
+                    self.counter.up += 1
+
+                if new_state != 1 or old_state == -1:
+                    data['state'] = new_state
+
+                active.append((tid, det['box']))
+                unmatched.pop(det_idx)
+            else:
+                data['missed'] += 1
+                if data['missed'] > 5:
+                    del self.tracks[tid]
+
+        for det in unmatched:
+            self.tracks[self.next_id] = {
+                'kf': SimpleKF(det['cx'], det['cy']),
+                'box': det['box'],
+                'missed': 0,
+                'prev_cx': det['cx'],
+                'prev_cy': det['cy'],
+                'state': self.counter.get_state(np.array([det['cx'], det['cy']]))
+            }
+            active.append((self.next_id, det['box']))
+            self.next_id += 1
+
+        return active
+
+# ===================== MAIN =====================
+
+
+def main():
+    device = torch.device(
+        "mps" if torch.backends.mps.is_available() else "cpu")
+
+    session = ort.InferenceSession(MODEL_PATH)
+    input_names = [i.name for i in session.get_inputs()]
+
+    cap = cv2.VideoCapture(VIDEO_PATH)
+    counter = VectorHysteresisCounter((450, 303), (480, 1836), 40)
+    tracker = RLTracker(device, counter)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        H, W = frame.shape[:2]
+
+        resized = cv2.resize(frame, (INPUT_W, INPUT_H))
+        img = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)/255.0
+        img = img.transpose(2, 0, 1)[np.newaxis, :]
+
+        orig_size = np.array([[float(W), float(H)]], dtype=np.float32)
+
+        outputs = session.run(None, {
+            input_names[0]: img,
+            input_names[1]: orig_size
+        })
+
+        boxes = np.squeeze(outputs[1])
+        scores = np.squeeze(outputs[2])
+
+        detections = []
+        for i, s in enumerate(scores):
+            if s > SCORE_THRES:
+                x1, y1, x2, y2 = boxes[i]
+                detections.append({
+                    'cx': (x1+x2)/2,
+                    'cy': (y1+y2)/2,
+                    'box': [x1, y1, x2, y2]
+                })
+
+        tracks = tracker.process_frame(detections)
+
+        for tid, box in tracks:
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 200, 0), 2)
+            cv2.putText(frame, f"ID {tid}", (x1, y1-5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
 
         counter.draw(frame)
-        cv2.imshow("M1 Accelerated OC-SORT", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'): break
 
-    avg_fps = 1000.0 / (overall_time / frame_idx) if frame_idx > 0 else 0
-    print(f"\nFinal Counts -> Up: {counter.up}, Down: {counter.down}")
-    print(f"Avg Tracker FPS: {int(avg_fps)}")
+        cv2.imshow("RL Shrimp Tracker", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
 
     cap.release()
     cv2.destroyAllWindows()
+
+    # ADD THESE LINES HERE:
+    print("-" * 20)
+    print(f"Final Count - Up: {counter.up}")
+    print(f"Final Count - Down: {counter.down}")
+    print("-" * 20)
+
 
 if __name__ == "__main__":
     main()

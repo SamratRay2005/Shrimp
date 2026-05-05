@@ -1,0 +1,22 @@
+(base) user/samrat$ python train_agent.py
+🚀 Initializing Training on Compute Device: cuda
+Loading Ground Truth from rl_clean_training_data.csv...
+
+Starting Training Loop...
+Epoch:  20/300 | Steps:  16 | Total Reward: -10.0 | Epsilon: 0.905 | Avg Loss: 18.4742
+Epoch:  40/300 | Steps:  17 | Total Reward:  -7.0 | Epsilon: 0.818 | Avg Loss: 9.4282
+Epoch:  60/300 | Steps:  18 | Total Reward:  -8.0 | Epsilon: 0.740 | Avg Loss: 14.0167
+Epoch:  80/300 | Steps:  26 | Total Reward:   4.0 | Epsilon: 0.670 | Avg Loss: 0.7217
+Epoch: 100/300 | Steps:  19 | Total Reward:   1.0 | Epsilon: 0.606 | Avg Loss: 30.5319
+Epoch: 120/300 | Steps:  17 | Total Reward:   1.0 | Epsilon: 0.548 | Avg Loss: 19.5208
+Epoch: 140/300 | Steps:  18 | Total Reward:   4.0 | Epsilon: 0.496 | Avg Loss: 10.0209
+Epoch: 160/300 | Steps:  17 | Total Reward:  -5.0 | Epsilon: 0.448 | Avg Loss: 17.1199
+Epoch: 180/300 | Steps:  25 | Total Reward:   3.0 | Epsilon: 0.406 | Avg Loss: 24.9735
+Epoch: 200/300 | Steps:  18 | Total Reward:  12.0 | Epsilon: 0.367 | Avg Loss: 11.5761
+Epoch: 220/300 | Steps:  16 | Total Reward:   8.0 | Epsilon: 0.332 | Avg Loss: 26.6595
+Epoch: 240/300 | Steps:  19 | Total Reward:   1.0 | Epsilon: 0.300 | Avg Loss: 5.1609
+Epoch: 260/300 | Steps:  16 | Total Reward:   4.0 | Epsilon: 0.272 | Avg Loss: 23.6725
+Epoch: 280/300 | Steps:  21 | Total Reward:   9.0 | Epsilon: 0.246 | Avg Loss: 21.5919
+Epoch: 300/300 | Steps:  19 | Total Reward:  11.0 | Epsilon: 0.222 | Avg Loss: 18.3419
+
+✅ Training Complete. Model weights saved to 'shrimp_tracker_policy.pth'
