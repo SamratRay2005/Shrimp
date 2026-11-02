@@ -1,0 +1,114 @@
+# D-FINE Fine-tuning Config for UAVSwarm Drone Detection
+# =========================================================
+# WHY THIS CONFIG:
+#   UAVSwarm dataset has drones that are often tiny (< 32x32 pixels).
+#   We use dfine_m (medium) as the backbone — best balance of accuracy vs
+#   Colab T4 VRAM (16GB). We train at 800x800 instead of the default 640x640
+#   to preserve more detail for small objects, which is the dominant challenge.
+#
+# STARTING POINT: COCO pretrained weights (dfine_m_coco.pth)
+#   Transfer learning from COCO gives us a strong feature extractor that
+#   already understands "objects in scenes" — we fine-tune the head for drones.
+
+__include__: [
+  '../../D-FINE/configs/dfine/include/dataloader.yml',
+  '../../D-FINE/configs/dfine/include/optimizer.yml',
+  '../../D-FINE/configs/dfine/include/runtime.yml',
+  '../../D-FINE/configs/dfine/dfine_hgnetv2_m.yml',
+]
+
+# ── Output ───────────────────────────────────────────────
+output_dir: ./results/dfine_uavswarm_m
+
+# ── Model: 1 class (drone) ───────────────────────────────
+model:
+  decoder:
+    num_classes: 1       # Only "drone" — single-class detection
+
+# ── Dataset ──────────────────────────────────────────────
+train_dataloader:
+  dataset:
+    img_folder: ./data/uavswarm/coco/train2017/
+    ann_file: ./data/uavswarm/coco/annotations/instances_train2017.json
+    return_masks: False
+    transforms:
+      ops:
+        # Random resize within range — teaches multi-scale detection
+        - {type: RandomPhotometricDistort, p: 0.8}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        # Aerial imagery: drones can appear from any angle → horizontal flip
+        - {type: RandomHorizontalFlip}
+        # Vertical flip too — drones seen from above go in all directions
+        - {type: RandomVerticalFlip, p: 0.3}
+        # Multi-scale: train at various sizes around target resolution
+        - type: RandomResize
+          sizes: [640, 672, 704, 736, 768, 800]
+          max_size: 1024
+        - {type: ToImageTensor}
+        - {type: ConvertDtype}
+        - type: SanitizeBoundingBoxes
+          min_size: 1
+  batch_size: 6           # T4 16GB fits ~6 at 800px; reduce to 4 if OOM
+  shuffle: True
+  num_workers: 4
+  drop_last: True
+
+val_dataloader:
+  dataset:
+    img_folder: ./data/uavswarm/coco/val2017/
+    ann_file: ./data/uavswarm/coco/annotations/instances_val2017.json
+    return_masks: False
+    transforms:
+      ops:
+        - {type: Resize, size: [800, 800], max_size: 1024}
+        - {type: ToImageTensor}
+        - {type: ConvertDtype}
+  batch_size: 4
+  shuffle: False
+  num_workers: 4
+  drop_last: False
+
+# ── Training Schedule ────────────────────────────────────
+# WHY 72 epochs: UAVSwarm is smaller than COCO — fewer data = fewer epochs
+# With COCO pretraining, the model converges fast; over-training hurts
+solver:
+  max_epoch: 72
+  val_epoch: 2           # Validate every 2 epochs to track AP_s closely
+
+  # Warmup: critical when fine-tuning; prevents blowing up pretrained weights
+  warmup_iter: 500
+  warmup_bias_lr: 0.0001
+
+  # LR: start lower than default (1e-4) since we're fine-tuning, not from scratch
+  optimizer:
+    type: AdamW
+    params:
+      - params: '^(?=.*backbone)(?=.*norm).*$'
+        lr: 1.0e-05      # Backbone norms: very low — preserve ImageNet features
+        weight_decay: 0.00
+      - params: '^(?=.*backbone).*$'
+        lr: 1.0e-05      # Backbone: low — don't destroy pretrained features
+      - params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+        weight_decay: 0.00
+    lr: 5.0e-05           # Head: slightly higher — needs to adapt to drone domain
+    betas: [0.9, 0.999]
+    weight_decay: 1.0e-04
+
+  lr_scheduler:
+    type: MultiStepLR
+    milestones: [55, 68]  # Decay at ~75% and ~95% of training
+    gamma: 0.1
+
+  # Gradient clipping: important for training stability with small LR
+  clip_max_norm: 0.1
+
+# ── Evaluation ───────────────────────────────────────────
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox']
+  # We care most about AP_s (small objects) — drones at distance
+
+# ── Checkpointing ────────────────────────────────────────
+# Save every epoch — UAVSwarm is small, training is fast, storage is cheap
+checkpoint_freq: 1

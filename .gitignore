@@ -1,27 +1,30 @@
-# Environments
-ort311/
-venv/
-.env
+# User-specified exclusions
+myrepo.txt
+PLAN.md
+DEVLOG.md
 
-# Python Bytecode
+# Scratch and internal task notes
+run.txt
+newdataset.txt
+how_to_use_colab.md
+code_bundle.tar.gz
+
+# Generated tracking video artifacts (users can generate with run.py)
+results/tracked_*.mp4
+
+# Python and OS caches
 __pycache__/
-*.pyc
-
-# ML Models (Large Binaries)
-*.pt
-*.onnx
-*.weights
-*.engine
-
-# Media & Datasets
-*.mp4
-*.mkv
-*.mov
-*.jpg
-*.jpeg
-*.png
-datasets/
-runs/
-
-# macOS System Files
+*.py[cod]
+*$py.class
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.ipynb_checkpoints/
+
+# Intermediate runtime logs and temporary weights
+weight/
+logs/
