@@ -48,7 +48,9 @@ REPO_ROOT = CURRENT_DIR
 
 DEFAULT_VIDEO = os.path.join(REPO_ROOT, "results", "uavswarm_test_raw.mp4")
 DEFAULT_POLICY = os.path.join(REPO_ROOT, "checkpoints", "drone_tracker_policy_best.pth")
-DEFAULT_YOLOX_WEIGHTS = os.path.join(REPO_ROOT, "checkpoints", "yolox_s.onnx")
+DEFAULT_YOLOX_WEIGHTS = os.path.join(REPO_ROOT, "checkpoints", "yolox_drone_finetuned.onnx")
+if not os.path.exists(DEFAULT_YOLOX_WEIGHTS):
+    DEFAULT_YOLOX_WEIGHTS = os.path.join(REPO_ROOT, "checkpoints", "yolox_s.onnx")
 
 # Automatic mapping from test videos to official UAVSwarm YOLOX detection files
 KNOWN_YOLOX_DET_MAP = {
