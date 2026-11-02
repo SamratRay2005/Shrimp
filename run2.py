@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """
-Drone Swarm Trajectory Tracker — Ground Truth Annotation Pipeline
-==================================================================
-Counterpart to run.py:
-  Instead of running the D-FINE deep learning object detector, this script feeds
-  the REAL ground-truth annotations directly into the Drone Swarm RL Tracker.
+Drone Swarm Trajectory Tracker — Ground Truth Detection Pipeline (run2.py)
+==========================================================================
+Uses Ground Truth annotations SOLELY as the Object Detector (raw bounding boxes),
+while the entire multi-target tracking, dynamic velocity-adaptive gating,
+Kalman kinematic prediction, and learned Deep Q-Network data association
+are performed 100% by OUR RL TRACKING MODEL.
 
-Why this script exists:
-  1. Isolates the Reinforcement Learning data association policy, dynamic gating,
-     and Kalman kinematic filter from detector false positives / false negatives.
-  2. Provides an empirical upper-bound benchmark for multi-target flight path tracing.
-  3. Allows real-time evaluation at high playback speeds (30-60+ FPS) without GPU inference.
-  4. Automatically maps and pairs with the UAVSwarm benchmark ground truth files.
+Key Architecture:
+  1. Detection Source: Ground Truth Bounding Boxes [x1, y1, x2, y2]
+     (All dataset track IDs are stripped; detections are shuffled per frame to
+      ensure no frame-to-frame ordering correlation).
+  2. Multi-Target Tracking Model: OUR MODEL
+     - 2D Constant-Velocity Kalman Filter (state: [x, y, vx, vy])
+     - Velocity-Adaptive Dynamic Gating: R_dynamic = clip(20 + 2*v + 4*missed, 20, 65) px
+     - 8-subregion polar spatial discretization
+     - Learned Deep Q-Network (DroneQNetwork) candidate scoring: Q in [0, 1]
+     - Global Hungarian Bipartite Assignment: min sum(dist * (1.5 - Q))
+  3. Continuous Spatial Trajectory Tracing: Real-time neon flight paths
+  4. Real-time Rendering & Telemetry HUD Overlay
 
 Usage:
-  # Run on default test video using real ground truth annotations
+  # Run on default test video with ground truth detection inputs
   python run2.py
 
-  # Run on specific benchmark test sequence (automatically resolves matching gt.txt)
+  # Run on specific benchmark test sequence
   python run2.py --video results/uavswarm_test_04_raw.mp4
   python run2.py --video results/uavswarm_test_08_raw.mp4
   python run2.py --video results/uavswarm_test_14_raw.mp4
@@ -25,8 +32,8 @@ Usage:
   # Run with an explicit ground truth annotation file
   python run2.py --video results/uavswarm_test_raw.mp4 --gt results/uavswarm_02_gt.txt
 
-  # Run headless (no GUI window; outputs tracked MP4 and CSV directly)
-  python run2.py --video results/uavswarm_test_08_raw.mp4 --headless
+  # Run headless (outputs tracked MP4, CSV, and JSON directly)
+  python run2.py --video results/uavswarm_test_04_raw.mp4 --headless
 """
 
 import os
@@ -34,6 +41,7 @@ import sys
 import math
 import time
 import json
+import random
 import argparse
 import numpy as np
 import pandas as pd
@@ -67,116 +75,116 @@ MAX_MISSED = 8        # Frames before an unobserved track is terminated
 TRAIL_LENGTH = 80     # Length of trajectory history trails to render
 
 
-# ===================== GROUND TRUTH ANNOTATION LOADER =====================
-def load_ground_truth_annotations(gt_path: str) -> dict:
+# ===================== GROUND TRUTH OBJECT DETECTOR =====================
+class GroundTruthObjectDetector:
     """
-    Parses ground-truth annotations from either MOT16 gt.txt format:
-      frame, id, bb_left, bb_top, width, height, conf, ...
-    or standard CSV format:
-      frame, track_id, cx, cy, x1, y1, x2, y2
-
-    Returns:
-      dict: {frame_idx: list of dicts [{'cx', 'cy', 'box': [x1, y1, x2, y2], 'gt_id', 'score': 1.0}]}
+    Extracts purely anonymous bounding boxes and centroids [cx, cy] from ground truth.
+    All dataset track IDs are completely discarded.
+    Detections are intentionally randomized/shuffled per frame to eliminate any dataset ordering.
     """
-    if not os.path.exists(gt_path):
-        raise FileNotFoundError(f"Ground truth file not found: {gt_path}")
+    def __init__(self, gt_path: str):
+        if not os.path.exists(gt_path):
+            raise FileNotFoundError(f"Ground truth file not found: {gt_path}")
 
-    frames_dict = {}
-    print(f"📖 Parsing real ground truth annotations from: {gt_path}")
+        self.gt_path = gt_path
+        self.frames_detections = {}
+        self._load_annotations()
 
-    # Detect if file is comma-separated CSV with headers or MOT text
-    with open(gt_path, 'r') as f:
-        first_line = f.readline().strip()
+    def _load_annotations(self):
+        print(f"📦 Loading ground-truth object detection bounding boxes from: {self.gt_path}")
 
-    has_header = False
-    if any(h in first_line.lower() for h in ['frame', 'track_id', 'bb_left', 'cx', 'cy']):
-        has_header = True
+        # Check if CSV with headers or MOT text
+        with open(self.gt_path, 'r') as f:
+            first_line = f.readline().strip()
 
-    if has_header:
-        df = pd.read_csv(gt_path)
-        for _, row in df.iterrows():
-            f_idx = int(row['frame'])
-            gt_id = int(row.get('track_id', row.get('id', 1)))
+        has_header = any(h in first_line.lower() for h in ['frame', 'track_id', 'bb_left', 'cx', 'cy'])
 
-            if 'cx' in row and 'cy' in row:
-                cx = float(row['cx'])
-                cy = float(row['cy'])
-                x1 = float(row.get('x1', cx - 10))
-                y1 = float(row.get('y1', cy - 10))
-                x2 = float(row.get('x2', cx + 10))
-                y2 = float(row.get('y2', cy + 10))
-            elif 'bb_left' in row and 'bb_top' in row:
-                x1 = float(row['bb_left'])
-                y1 = float(row['bb_top'])
-                w_box = float(row['width'])
-                h_box = float(row['height'])
-                x2 = x1 + w_box
-                y2 = y1 + h_box
-                cx = x1 + w_box / 2.0
-                cy = y1 + h_box / 2.0
-            else:
-                continue
-
-            if f_idx not in frames_dict:
-                frames_dict[f_idx] = []
-            frames_dict[f_idx].append({
-                'cx': cx,
-                'cy': cy,
-                'box': [x1, y1, x2, y2],
-                'gt_id': gt_id,
-                'score': 1.0
-            })
-    else:
-        # Standard MOT format: frame, id, bb_left, bb_top, width, height, conf, ...
-        with open(gt_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split(',')
-                if len(parts) < 6:
+        if has_header:
+            df = pd.read_csv(self.gt_path)
+            for _, row in df.iterrows():
+                f_idx = int(row['frame'])
+                if 'cx' in row and 'cy' in row:
+                    cx = float(row['cx'])
+                    cy = float(row['cy'])
+                    x1 = float(row.get('x1', cx - 10))
+                    y1 = float(row.get('y1', cy - 10))
+                    x2 = float(row.get('x2', cx + 10))
+                    y2 = float(row.get('y2', cy + 10))
+                elif 'bb_left' in row and 'bb_top' in row:
+                    x1 = float(row['bb_left'])
+                    y1 = float(row['bb_top'])
+                    w_box = float(row['width'])
+                    h_box = float(row['height'])
+                    x2 = x1 + w_box
+                    y2 = y1 + h_box
+                    cx = x1 + w_box / 2.0
+                    cy = y1 + h_box / 2.0
+                else:
                     continue
 
-                f_idx = int(float(parts[0]))
-                gt_id = int(float(parts[1]))
-                bb_left = float(parts[2])
-                bb_top = float(parts[3])
-                width = float(parts[4])
-                height = float(parts[5])
-
-                # Check confidence/consideration flag if present
-                if len(parts) >= 7:
-                    try:
-                        conf = float(parts[6])
-                        if conf == 0:
-                            continue
-                    except ValueError:
-                        pass
-
-                x1 = bb_left
-                y1 = bb_top
-                x2 = bb_left + width
-                y2 = bb_top + height
-                cx = x1 + width / 2.0
-                cy = y1 + height / 2.0
-
-                if f_idx not in frames_dict:
-                    frames_dict[f_idx] = []
-                frames_dict[f_idx].append({
+                if f_idx not in self.frames_detections:
+                    self.frames_detections[f_idx] = []
+                self.frames_detections[f_idx].append({
                     'cx': cx,
                     'cy': cy,
                     'box': [x1, y1, x2, y2],
-                    'gt_id': gt_id,
                     'score': 1.0
                 })
+        else:
+            # MOT16 format: frame, id, bb_left, bb_top, width, height, conf, ...
+            with open(self.gt_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split(',')
+                    if len(parts) < 6:
+                        continue
 
-    total_dets = sum(len(v) for v in frames_dict.values())
-    unique_gt_ids = len({d['gt_id'] for dets in frames_dict.values() for d in dets})
-    print(f"✅ Loaded {total_dets} ground truth bounding boxes across {len(frames_dict)} frames ({unique_gt_ids} unique drone IDs).")
-    return frames_dict
+                    f_idx = int(float(parts[0]))
+                    bb_left = float(parts[2])
+                    bb_top = float(parts[3])
+                    width = float(parts[4])
+                    height = float(parts[5])
+
+                    if len(parts) >= 7:
+                        try:
+                            if float(parts[6]) == 0:
+                                continue
+                        except ValueError:
+                            pass
+
+                    x1 = bb_left
+                    y1 = bb_top
+                    x2 = bb_left + width
+                    y2 = bb_top + height
+                    cx = x1 + width / 2.0
+                    cy = y1 + height / 2.0
+
+                    if f_idx not in self.frames_detections:
+                        self.frames_detections[f_idx] = []
+                    # Strictly anonymous bounding boxes and centroids (NO track IDs)
+                    self.frames_detections[f_idx].append({
+                        'cx': cx,
+                        'cy': cy,
+                        'box': [x1, y1, x2, y2],
+                        'score': 1.0
+                    })
+
+        total_dets = sum(len(v) for v in self.frames_detections.values())
+        print(f"✅ Loaded {total_dets} anonymous drone bounding boxes across {len(self.frames_detections)} frames.")
+
+    def get_detections_for_frame(self, frame_idx: int) -> list:
+        """
+        Returns anonymous detections for the given frame.
+        Shuffles the list to guarantee that tracking does NOT exploit any dataset ordering.
+        """
+        dets = list(self.frames_detections.get(frame_idx, []))
+        random.shuffle(dets)
+        return dets
 
 
-# ===================== DRONE Q-NETWORK =====================
+# ===================== OUR MODEL: DRONE Q-NETWORK =====================
 class DroneQNetwork(nn.Module):
     """
     5-feature RL Q-Network scoring candidate detections for learned data association.
@@ -196,7 +204,7 @@ class DroneQNetwork(nn.Module):
         return self.net(x)
 
 
-# ===================== 2D KALMAN FILTER =====================
+# ===================== OUR MODEL: 2D KALMAN FILTER =====================
 class SimpleKF:
     """Constant-velocity 2D Kalman filter for smooth centroid state estimation."""
     def __init__(self, cx: float, cy: float):
@@ -229,16 +237,15 @@ class SimpleKF:
         self.P = (np.eye(4) - K @ self.H) @ self.P
 
 
-# ===================== VELOCITY-ADAPTIVE RL TRACKER =====================
+# ===================== OUR MODEL: VELOCITY-ADAPTIVE RL TRACKER =====================
 class DroneRLTracker:
     """
-    Multi-Target Swarm Tracker operating directly on incoming candidate detections.
-    Combines:
+    Multi-Target Drone Swarm Tracker:
       1. Dynamic velocity-adaptive gating: R_dyn = clip(20 + 2*v + 4*missed, 20, 65)
       2. 8-subregion spatial discretization
-      3. Deep Q-Network candidate scoring
+      3. Deep Q-Network (RL) candidate scoring
       4. Hungarian global optimal bipartite association
-      5. Full flight path trajectory tracing
+      5. Autonomous track ID management and trajectory tracing
     """
     def __init__(self, policy_path: str, device: torch.device):
         self.device = device
@@ -249,14 +256,14 @@ class DroneRLTracker:
                 self.policy.load_state_dict(ckpt['model'])
             else:
                 self.policy.load_state_dict(ckpt)
-            print(f"✅ Loaded RL policy from {policy_path}")
+            print(f"✅ Loaded our trained RL tracker policy from {policy_path}")
         else:
             print(f"⚠️  Policy checkpoint not found at {policy_path}, running with initialized weights.")
         self.policy.eval()
 
-        self.tracks = {}          # {track_id: {'kf', 'box', 'missed', 'cx', 'cy', 'vx', 'vy', 'history', 'hits', 'gt_id'}}
-        self.trajectories = {}    # {track_id: [{'frame', 'cx', 'cy', 'vx', 'vy', 'box', 'gt_id'}]}
-        self.next_id = 1
+        self.tracks = {}          # {track_id: {'kf', 'box', 'missed', 'cx', 'cy', 'vx', 'vy', 'history', 'hits'}}
+        self.trajectories = {}    # {track_id: [{'frame', 'cx', 'cy', 'vx', 'vy', 'box'}]}
+        self.next_id = 1          # Track IDs are generated solely by our model
 
     def compute_dynamic_gate(self, vx: float, vy: float, missed: int = 0) -> float:
         """Scales the association search gate dynamically based on current velocity and missed frames."""
@@ -282,14 +289,17 @@ class DroneRLTracker:
         return ring * 4 + q
 
     def process_frame(self, detections: list, frame_idx: int) -> list:
+        """
+        Takes raw, anonymous object detections and performs association entirely
+        using our model (Kalman prediction + Dynamic Gating + DroneQNetwork + Hungarian).
+        """
         tids = list(self.tracks.keys())
         active = []
 
-        # If no active tracks, initialize new tracks from all detections
+        # If no active tracks, initialize new tracks from all incoming detections
         if not tids:
             for det in detections:
                 tid = self.next_id
-                gt_id = det.get('gt_id', tid)
                 self.tracks[tid] = {
                     'kf': SimpleKF(det['cx'], det['cy']),
                     'box': det['box'],
@@ -297,19 +307,17 @@ class DroneRLTracker:
                     'vx': 0.0, 'vy': 0.0,
                     'hits': 1, 'missed': 0,
                     'history': [(int(det['cx']), int(det['cy']))],
-                    'gt_id': gt_id
                 }
                 self.trajectories[tid] = [{
                     'frame': frame_idx,
                     'cx': float(det['cx']), 'cy': float(det['cy']),
                     'vx': 0.0, 'vy': 0.0,
                     'box': [float(b) for b in det['box']],
-                    'gt_id': gt_id
                 }]
                 self.next_id += 1
             return []
 
-        # Build Hungarian assignment cost matrix
+        # Build Hungarian assignment cost matrix using our RL model
         cost_matrix = np.full((len(tids), len(detections)), 1e5)
         gates = []
 
@@ -344,10 +352,10 @@ class DroneRLTracker:
                     q_vals = self.policy(feats).cpu().numpy().flatten()
 
                 for (j, dx, dy, dist, _), q in zip(cands, q_vals):
-                    # Combine spatial Euclidean distance with learned RL association score
+                    # Combine spatial Euclidean distance with our learned RL association score
                     cost_matrix[i, j] = dist * (1.5 - float(q))
 
-        # Solve optimal bipartite matching
+        # Solve optimal bipartite matching globally
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         matched_tracks = set()
         matched_dets = set()
@@ -369,7 +377,6 @@ class DroneRLTracker:
                 data['cx'] = det['cx']
                 data['cy'] = det['cy']
                 data['box'] = det['box']
-                data['gt_id'] = det.get('gt_id', data['gt_id'])
                 data['kf'].update(det['cx'], det['cy'])
                 data['history'].append((int(det['cx']), int(det['cy'])))
                 if len(data['history']) > TRAIL_LENGTH:
@@ -387,7 +394,6 @@ class DroneRLTracker:
                     'vx': float(vx),
                     'vy': float(vy),
                     'box': [float(b) for b in det['box']],
-                    'gt_id': data['gt_id']
                 })
 
                 matched_tracks.add(tid)
@@ -396,7 +402,6 @@ class DroneRLTracker:
                 if data['hits'] >= 2:
                     active.append({
                         'track_id': tid,
-                        'gt_id': data['gt_id'],
                         'box': det['box'],
                         'cx': det['cx'],
                         'cy': det['cy'],
@@ -416,7 +421,6 @@ class DroneRLTracker:
         for j, det in enumerate(detections):
             if j not in matched_dets:
                 tid = self.next_id
-                gt_id = det.get('gt_id', tid)
                 self.tracks[tid] = {
                     'kf': SimpleKF(det['cx'], det['cy']),
                     'box': det['box'],
@@ -424,7 +428,6 @@ class DroneRLTracker:
                     'vx': 0.0, 'vy': 0.0,
                     'hits': 1, 'missed': 0,
                     'history': [(int(det['cx']), int(det['cy']))],
-                    'gt_id': gt_id
                 }
                 if tid not in self.trajectories:
                     self.trajectories[tid] = []
@@ -434,7 +437,6 @@ class DroneRLTracker:
                     'cy': float(det['cy']),
                     'vx': 0.0, 'vy': 0.0,
                     'box': [float(b) for b in det['box']],
-                    'gt_id': gt_id
                 })
                 self.next_id += 1
 
@@ -443,10 +445,10 @@ class DroneRLTracker:
 
 # ===================== MAIN PIPELINE =====================
 def main():
-    parser = argparse.ArgumentParser(description="Drone Swarm RL Trajectory Tracker — Ground Truth Annotation Pipeline")
+    parser = argparse.ArgumentParser(description="Drone Swarm RL Trajectory Tracker — Ground Truth Detection Pipeline")
     parser.add_argument("--video", type=str, default=DEFAULT_VIDEO, help="Path to input test video MP4")
     parser.add_argument("--gt", type=str, default="", help="Path to ground truth annotation file (MOT gt.txt or CSV)")
-    parser.add_argument("--policy", type=str, default=DEFAULT_POLICY, help="Path to trained RL policy checkpoint (.pth)")
+    parser.add_argument("--policy", type=str, default=DEFAULT_POLICY, help="Path to our trained RL policy checkpoint (.pth)")
     parser.add_argument("--output", type=str, default="", help="Path to output tracked video MP4")
     parser.add_argument("--csv", type=str, default="", help="Path to output trajectory CSV")
     parser.add_argument("--json", type=str, default="", help="Path to output trajectory JSON")
@@ -467,7 +469,6 @@ def main():
         if video_filename in KNOWN_GT_MAP:
             gt_file = KNOWN_GT_MAP[video_filename]
         else:
-            # Check common patterns
             candidates = [
                 os.path.join(REPO_ROOT, "results", f"{base_stem}_gt.txt"),
                 os.path.join(REPO_ROOT, "results", f"{base_stem}.csv"),
@@ -493,19 +494,19 @@ def main():
     )
 
     print("=" * 70)
-    print("🛸 DRONE SWARM RL TRACKER — GROUND TRUTH ANNOTATION PIPELINE (run2.py)")
+    print("🛸 DRONE SWARM TRACKER — GT DETECTIONS + OUR RL TRACKING MODEL")
     print("=" * 70)
     print(f"🎥 Input Video    : {video_path}")
-    print(f"📋 Ground Truth   : {gt_file}")
-    print(f"🧠 RL Policy      : {args.policy} (Device: {device})")
+    print(f"📦 Object Detector: Ground Truth Bounding Boxes ({gt_file})")
+    print(f"🧠 Tracking Model : OUR RL DroneQNetwork Policy ({args.policy})")
     print(f"🎯 Dynamic Gating : R = clip({BASE_GATE:.0f} + {VEL_COEF:.1f}*v + {MISSED_COEF:.1f}*k, {MIN_GATE:.0f}, {MAX_GATE:.0f}) px")
     print(f"💾 Output Video   : {out_video_path}")
     print(f"📊 Trajectory CSV : {out_csv_path}")
 
-    # Load Ground Truth Detections
-    gt_frames_dict = load_ground_truth_annotations(gt_file)
+    # Load Ground Truth Detector (provides raw anonymous bounding boxes)
+    detector = GroundTruthObjectDetector(gt_file)
 
-    # Initialize RL Tracker
+    # Initialize OUR RL Tracker (performs 100% of data association and flight path tracking)
     tracker = DroneRLTracker(args.policy, device)
 
     # Open Video Capture
@@ -518,7 +519,7 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w, h))
 
-    window_title = f"RL Drone Tracker (Ground Truth Annotations) — {base_stem}"
+    window_title = f"RL Drone Tracker (Our Model Tracking GT Detections) — {base_stem}"
     if not args.headless:
         cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_title, min(1280, int(w * 1.5)), min(720, int(h * 1.5)))
@@ -527,9 +528,8 @@ def main():
     frame_idx = 0
     t_start = time.time()
     active_counts = []
-    gt_counts = []
 
-    print(f"\n🚀 Running ground-truth tracking on {total_frames} frames ({w}x{h} @ {fps:.1f} FPS)...")
+    print(f"\n🚀 Running our RL model tracking on {total_frames} frames ({w}x{h} @ {fps:.1f} FPS)...")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -537,30 +537,28 @@ def main():
             break
         frame_idx += 1
 
-        # 1. RETRIEVE REAL GROUND TRUTH ANNOTATIONS FOR THIS FRAME
-        detections = gt_frames_dict.get(frame_idx, [])
-        gt_counts.append(len(detections))
+        # 1. RETRIEVE RAW ANONYMOUS BOUNDING BOXES FOR THIS FRAME (SHUFFLED)
+        detections = detector.get_detections_for_frame(frame_idx)
 
-        # 2. RUN REINFORCEMENT LEARNING DATA ASSOCIATION & TRACKING
+        # 2. RUN OUR REINFORCEMENT LEARNING TRACKER (Kalman + Dynamic Gate + Q-Network + Hungarian)
         active_tracks = tracker.process_frame(detections, frame_idx)
         active_counts.append(len(active_tracks))
 
-        # 3. RENDER TRAJECTORIES & GROUND TRUTH OVERLAYS
+        # 3. RENDER TRAJECTORIES & OUR MODEL'S ASSIGNED TRACKS ON FRAME
         for trk in active_tracks:
             tid = trk['track_id']
-            gt_id = trk.get('gt_id', tid)
             box = trk['box']
             hist = trk['history']
             gate_r = int(trk['gate'])
 
-            # Deterministic neon color per drone ID
+            # Deterministic neon color per model-tracked ID
             color = (
                 int((tid * 67 + 50) % 256),
                 int((tid * 137 + 100) % 256),
                 int((tid * 223 + 150) % 256)
             )
 
-            # Continuous motion trajectory trail
+            # Continuous motion trajectory trail generated by our model
             if len(hist) > 1:
                 for p in range(1, len(hist)):
                     cv2.line(frame, hist[p - 1], hist[p], color, 2, cv2.LINE_AA)
@@ -569,29 +567,29 @@ def main():
             cx, cy = int(trk['cx']), int(trk['cy'])
             cv2.circle(frame, (cx, cy), 3, (0, 255, 255), -1, cv2.LINE_AA)
 
-            # Velocity-Adaptive Dynamic Gate visualization ring
+            # Our model's Velocity-Adaptive Dynamic Gate ring
             cv2.circle(frame, (cx, cy), gate_r, color, 1, cv2.LINE_AA)
 
             # Drone bounding box
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-            # ID Badge with Track ID and original Ground Truth ID
-            label = f"#{tid} (GT:{gt_id})"
+            # Model Track ID Badge with dynamic gating radius
+            label = f"#{tid} ({gate_r}px)"
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
             cv2.rectangle(frame, (x1, max(0, y1 - th - 6)), (x1 + tw + 4, max(th + 6, y1)), color, -1)
             cv2.putText(frame, label, (x1 + 2, max(th + 2, y1 - 3)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
 
         # Telemetry HUD Overlay
-        cv2.rectangle(frame, (10, 10), (410, 105), (20, 20, 20), -1)
-        cv2.rectangle(frame, (10, 10), (410, 105), (0, 255, 128), 1)
-        cv2.putText(frame, f"Active RL Tracks: {len(active_tracks)} | GT Drones: {len(detections)}", (20, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.rectangle(frame, (10, 10), (430, 105), (20, 20, 20), -1)
+        cv2.rectangle(frame, (10, 10), (430, 105), (0, 255, 128), 1)
+        cv2.putText(frame, f"Active Drones Traced: {len(active_tracks)}", (20, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(frame, f"Frame: {frame_idx}/{total_frames} ({fps:.0f} FPS playback)", (20, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Annotation Source: Ground Truth MOT ({os.path.basename(gt_file)})", (20, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Detector: GT BBoxes | Tracker: Our RL Model", (20, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 0), 1, cv2.LINE_AA)
 
         writer.write(frame)
 
@@ -618,14 +616,13 @@ def main():
     elapsed = time.time() - t_start
     proc_fps = frame_idx / elapsed if elapsed > 0 else 0
 
-    # Save trajectory dataset
+    # Save trajectory dataset generated entirely by our tracker
     clean_rows = []
     for tid, pts in tracker.trajectories.items():
         if len(pts) >= 2:
             for pt in pts:
                 clean_rows.append({
                     'track_id': tid,
-                    'gt_id': pt.get('gt_id', tid),
                     'frame': pt['frame'],
                     'cx': pt['cx'], 'cy': pt['cy'],
                     'vx': pt['vx'], 'vy': pt['vy'],
@@ -640,14 +637,13 @@ def main():
 
     # Print Summary Report
     print("\n" + "=" * 70)
-    print("📈 GROUND-TRUTH TRACKING PERFORMANCE SUMMARY (run2.py)")
+    print("📈 TRACKING PERFORMANCE SUMMARY (OUR MODEL ON GT DETECTIONS)")
     print("=" * 70)
     print(f"⏱️  Processing Time : {elapsed:.2f} seconds ({proc_fps:.1f} FPS)")
     print(f"🎬 Frames Processed: {frame_idx} / {total_frames}")
     print(f"🛸 Persistent Tracks: {df_clean['track_id'].nunique() if not df_clean.empty else 0}")
     print(f"📍 Trajectory Points: {len(df_clean)}")
-    print(f"📊 Mean Active/Frame: {np.mean(active_counts):.1f} drones (Peak: {np.max(active_counts) if active_counts else 0})")
-    print(f"📋 Mean GT in Frame : {np.mean(gt_counts):.1f} ground truth drones")
+    print(f"📊 Mean Active Swarm: {np.mean(active_counts):.1f} drones/frame (Peak: {np.max(active_counts) if active_counts else 0})")
     print(f"🎥 Tracked Video   : {out_video_path} ({os.path.getsize(out_video_path)/1024/1024:.2f} MB)")
     print(f"📄 Trajectory Logs : {out_csv_path} and {out_json_path}")
     print("=" * 70)
