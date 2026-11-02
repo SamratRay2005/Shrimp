@@ -408,9 +408,9 @@ def main():
         sys.exit(1)
 
     base_stem = os.path.splitext(os.path.basename(video_path))[0]
-    out_video_path = args.output or os.path.join(REPO_ROOT, "results", f"tracked_{base_stem}.mp4")
-    out_csv_path = args.csv or os.path.join(REPO_ROOT, "results", f"trajectories_{base_stem}.csv")
-    out_json_path = args.json or os.path.join(REPO_ROOT, "results", f"trajectories_{base_stem}.json")
+    out_video_path = f"result_with_our_dfine/tracked_{base_stem}.mp4"
+    out_csv_path = f"result_with_our_dfine/trajectories_{base_stem}.csv"
+    out_json_path = f"result_with_our_dfine/trajectories_{base_stem}.json"
 
     device = torch.device(
         "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")

@@ -34,6 +34,7 @@ import sys
 import math
 import time
 import json
+import random
 import argparse
 import numpy as np
 import pandas as pd
@@ -538,8 +539,9 @@ def main():
             break
         frame_idx += 1
 
-        # 1. RETRIEVE REAL GROUND TRUTH ANNOTATIONS FOR THIS FRAME
-        detections = gt_frames_dict.get(frame_idx, [])
+        # 1. RETRIEVE REAL GROUND TRUTH ANNOTATIONS FOR THIS FRAME (Isolated Bounding Boxes Only)
+        detections = [dict(d) for d in gt_frames_dict.get(frame_idx, [])]
+        random.shuffle(detections)  # Shuffle detections so order conveys zero tracking clues
         gt_counts.append(len(detections))
 
         # 2. RUN REINFORCEMENT LEARNING DATA ASSOCIATION & TRACKING
