@@ -144,7 +144,8 @@ $$\min_{\mathbf{X}} \sum_{i} \sum_{j} C_{i, j} X_{i, j} \quad \text{s.t.} \quad 
 RM_Shrimp_extension/
 │
 ├── run.py                           # Master runtime pipeline: live D-FINE detection + RL tracking on any video
-├── run2.py                          # Ground truth annotation pipeline: benchmark evaluation using real annotations
+├── run2.py                          # Ground truth detection pipeline: anonymous GT bounding boxes + RL tracking
+├── run3.py                          # Benchmark YOLOX pipeline: official UAVSwarm YOLOX detections + RL tracking
 │
 ├── shrimp_drone/                    # Core RL training and environment modules
 │   ├── drone_env.py                 # DroneTrackingEnv with dynamic gating (matches Shrimp/shrimp_env.py)
@@ -224,12 +225,31 @@ python run2.py --video results/uavswarm_test_raw.mp4 --gt results/uavswarm_02_gt
 python run2.py --video results/uavswarm_test_04_raw.mp4 --headless
 ```
 
-### 4. Interactive GUI Controls
+### 4. Benchmark YOLOX Tracking (`run3.py`)
+Run the RL data association and dynamic gating pipeline using the official **YOLOX detector** specified in the UAVSwarm benchmark repository ([UAVSwarm-dataset](https://github.com/UAVSwarm/UAVSwarm-dataset)):
+
+```bash
+# Run on default test video using official UAVSwarm YOLOX detections
+python run3.py
+
+# Run on benchmark sequences (automatically maps corresponding UAVSwarm YOLOX det.txt)
+python run3.py --video results/uavswarm_test_04_raw.mp4
+python run3.py --video results/uavswarm_test_08_raw.mp4
+python run3.py --video results/uavswarm_test_14_raw.mp4
+
+# Run with an explicit YOLOX detection file
+python run3.py --video results/uavswarm_test_raw.mp4 --det results/uavswarm_02_yolox_det.txt
+
+# Run headless
+python run3.py --video results/uavswarm_test_04_raw.mp4 --headless
+```
+
+### 5. Interactive GUI Controls
 When running with the live display active:
 * **`SPACE`**: Pause and resume video playback.
 * **`q`** or **`ESC`**: Terminate tracking cleanly and save current video/CSV logs.
 
-### 5. Configuration Flags
+### 6. Configuration Flags
 * `--video`: Path to input video file (default: `results/uavswarm_test_raw.mp4`).
 * `--weights`: Path to D-FINE detector checkpoint (default: `checkpoints/dfine_drone_weights.pth`).
 * `--policy`: Path to RL policy weights (default: `checkpoints/drone_tracker_policy_best.pth`).

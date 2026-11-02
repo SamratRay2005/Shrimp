@@ -52,7 +52,7 @@ from scipy.optimize import linear_sum_assignment
 
 # ===================== CONFIG =====================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = CURRENT_DIR
+REPO_ROOT = "result_without_custom_object_detection"
 
 DEFAULT_VIDEO = os.path.join(REPO_ROOT, "results", "uavswarm_test_raw.mp4")
 DEFAULT_POLICY = os.path.join(REPO_ROOT, "checkpoints", "drone_tracker_policy_best.pth")
