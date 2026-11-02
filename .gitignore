@@ -28,3 +28,4 @@ Thumbs.db
 # Intermediate runtime logs and temporary weights
 weight/
 logs/
+result_without_custom_object_detection/

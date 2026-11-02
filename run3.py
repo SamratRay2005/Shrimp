@@ -2,32 +2,30 @@
 """
 Drone Swarm Trajectory Tracker — YOLOX Detector Pipeline (run3.py)
 ===================================================================
-Uses the benchmark YOLOX object detector stated in the UAVSwarm repository
+Uses the YOLOX object detector stated in the UAVSwarm repository
 (https://github.com/UAVSwarm/UAVSwarm-dataset) for drone detection, while
-multi-target tracking, velocity-adaptive dynamic gating, and learned data
+multi-target tracking, dynamic velocity-adaptive gating, and learned data
 association are performed 100% by OUR RL TRACKER MODEL.
 
-Why this script exists:
-  1. UAVSwarm benchmark natively provides official YOLOX detection outputs
-     in standard MOT format (test/<seq>/det/det.txt).
-  2. run3.py evaluates our RL Tracker on the exact YOLOX detector outputs
-     specified by the UAVSwarm authors, enabling direct benchmark comparison.
-  3. Detections from YOLOX (bounding boxes and confidence scores) are fed frame-by-frame
-     into our 2D Kalman Filter, Dynamic Gating, and DroneQNetwork Hungarian assignment.
+Modes:
+  1. Runtime Neural Network Mode (--mode runtime):
+     Runs live YOLOX neural network inference (checkpoints/yolox_s.onnx) on
+     incoming video frames at runtime via ONNX Runtime / GPU / MPS / CPU.
+  2. Benchmark Detections Mode (--mode benchmark):
+     Uses the official UAVSwarm benchmark YOLOX detector outputs (det.txt)
+     published by the dataset authors for exact benchmark replication.
 
 Usage:
-  # Run on default test video using official UAVSwarm YOLOX detections
-  python run3.py
+  # Run live runtime YOLOX neural network detection on default video
+  python run3.py --mode runtime
 
-  # Run on specific benchmark test sequence (automatically resolves matching YOLOX det)
-  python run3.py --video results/uavswarm_test_04_raw.mp4
-  python run3.py --video results/uavswarm_test_08_raw.mp4
-  python run3.py --video results/uavswarm_test_14_raw.mp4
+  # Run on specific video using live YOLOX neural network
+  python run3.py --video results/uavswarm_test_04_raw.mp4 --mode runtime
 
-  # Run with an explicit YOLOX detection file
-  python run3.py --video results/uavswarm_test_raw.mp4 --det results/uavswarm_02_yolox_det.txt
+  # Run using official UAVSwarm benchmark YOLOX detections (default mode)
+  python run3.py --mode benchmark
 
-  # Run headless (ideal for server/cloud batch evaluation)
+  # Run headless (fast rendering without GUI window)
   python run3.py --video results/uavswarm_test_04_raw.mp4 --headless
 """
 
@@ -36,7 +34,6 @@ import sys
 import math
 import time
 import json
-import random
 import argparse
 import numpy as np
 import pandas as pd
@@ -51,6 +48,7 @@ REPO_ROOT = CURRENT_DIR
 
 DEFAULT_VIDEO = os.path.join(REPO_ROOT, "results", "uavswarm_test_raw.mp4")
 DEFAULT_POLICY = os.path.join(REPO_ROOT, "checkpoints", "drone_tracker_policy_best.pth")
+DEFAULT_YOLOX_WEIGHTS = os.path.join(REPO_ROOT, "checkpoints", "yolox_s.onnx")
 
 # Automatic mapping from test videos to official UAVSwarm YOLOX detection files
 KNOWN_YOLOX_DET_MAP = {
@@ -70,19 +68,89 @@ MAX_MISSED = 8        # Frames before an unobserved track is terminated
 TRAIL_LENGTH = 80     # Length of trajectory history trails to render
 
 
-# ===================== YOLOX OBJECT DETECTOR LOADER =====================
-class YOLOXDetector:
+# ===================== LIVE RUNTIME YOLOX NEURAL NETWORK =====================
+class RuntimeYOLOXDetector:
     """
-    Object detector interface for YOLOX on UAVSwarm.
-    Loads official YOLOX detection files (frame, -1, bb_left, bb_top, w, h, conf, ...)
-    or can run live inference if weights are provided.
+    Live runtime object detector powered by the YOLOX neural network architecture (ONNX Runtime).
+    Runs real-time forward-pass inference on raw incoming video frames.
     """
-    def __init__(self, det_path: str = "", conf_thresh: float = 0.3):
+    def __init__(self, model_path: str = DEFAULT_YOLOX_WEIGHTS, conf_thresh: float = 0.05,
+                 nms_thresh: float = 0.45, input_shape: tuple = (640, 640)):
+        import onnxruntime as ort
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"YOLOX model weights not found at: {model_path}")
+
+        print(f"📦 Initializing live runtime YOLOX neural network detector: {model_path}")
+        self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        self.input_name = self.session.get_inputs()[0].name
+        self.conf_thresh = conf_thresh
+        self.nms_thresh = nms_thresh
+        self.input_shape = input_shape
+        print(f"✅ YOLOX live runtime detector ready (input: {input_shape[0]}x{input_shape[1]}, conf >= {conf_thresh}).")
+
+    def detect(self, frame_bgr: np.ndarray, frame_idx: int = 0) -> list:
+        h, w = frame_bgr.shape[:2]
+        scale = min(self.input_shape[0] / h, self.input_shape[1] / w)
+        nh, nw = int(h * scale), int(w * scale)
+        resized = cv2.resize(frame_bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        padded = np.full((self.input_shape[0], self.input_shape[1], 3), 114, dtype=np.uint8)
+        padded[:nh, :nw] = resized
+        inp = padded.transpose((2, 0, 1)).astype(np.float32)
+        inp = np.expand_dims(inp, axis=0)
+
+        preds = self.session.run(None, {self.input_name: inp})[0][0]  # (8400, 85)
+
+        boxes = preds[:, :4]
+        obj_confs = preds[:, 4]
+        cls_confs = preds[:, 5:]
+
+        cls_max = np.max(cls_confs, axis=1)
+        scores = obj_confs * cls_max
+
+        mask = scores >= self.conf_thresh
+        boxes = boxes[mask]
+        scores = scores[mask]
+
+        if len(boxes) == 0:
+            return []
+
+        x = (boxes[:, 0] - boxes[:, 2] / 2.0) / scale
+        y = (boxes[:, 1] - boxes[:, 3] / 2.0) / scale
+        bw = boxes[:, 2] / scale
+        bh = boxes[:, 3] / scale
+
+        boxes_xywh = np.stack([x, y, bw, bh], axis=1)
+        indices = cv2.dnn.NMSBoxes(boxes_xywh.tolist(), scores.tolist(), float(self.conf_thresh), float(self.nms_thresh))
+
+        detections = []
+        if len(indices) > 0:
+            for idx in np.array(indices).flatten():
+                bx, by, bw_i, bh_i = boxes_xywh[idx]
+                x1 = max(0.0, float(bx))
+                y1 = max(0.0, float(by))
+                x2 = min(float(w), float(bx + bw_i))
+                y2 = min(float(h), float(by + bh_i))
+                detections.append({
+                    'cx': (x1 + x2) / 2.0,
+                    'cy': (y1 + y2) / 2.0,
+                    'box': [x1, y1, x2, y2],
+                    'score': float(scores[idx])
+                })
+        return detections
+
+
+# ===================== BENCHMARK YOLOX DETECTION LOADER =====================
+class BenchmarkYOLOXDetector:
+    """
+    Loads the official YOLOX benchmark detection files published in the UAVSwarm repository.
+    Format: frame, -1, bb_left, bb_top, width, height, conf, -1, -1, -1
+    """
+    def __init__(self, det_path: str, conf_thresh: float = 0.2):
         self.det_path = det_path
         self.conf_thresh = conf_thresh
         self.frames_detections = {}
-        if det_path and os.path.exists(det_path):
-            self._load_detection_file()
+        self._load_detection_file()
 
     def _load_detection_file(self):
         print(f"📦 Loading benchmark YOLOX object detections from: {self.det_path}")
@@ -122,10 +190,9 @@ class YOLOXDetector:
                 })
 
         total = sum(len(v) for v in self.frames_detections.values())
-        print(f"✅ Loaded {total} YOLOX drone detections across {len(self.frames_detections)} frames (conf >= {self.conf_thresh}).")
+        print(f"✅ Loaded {total} official YOLOX drone detections across {len(self.frames_detections)} frames.")
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int) -> list:
-        """Returns YOLOX object detections for the current frame."""
         return list(self.frames_detections.get(frame_idx, []))
 
 
@@ -386,11 +453,14 @@ class DroneRLTracker:
 
 # ===================== MAIN PIPELINE =====================
 def main():
-    parser = argparse.ArgumentParser(description="Drone Swarm RL Trajectory Tracker — YOLOX Detector Pipeline")
+    parser = argparse.ArgumentParser(description="Drone Swarm RL Trajectory Tracker — YOLOX Detector Pipeline (run3.py)")
     parser.add_argument("--video", type=str, default=DEFAULT_VIDEO, help="Path to input test video MP4")
-    parser.add_argument("--det", type=str, default="", help="Path to YOLOX detection file (det.txt)")
-    parser.add_argument("--policy", type=str, default=DEFAULT_POLICY, help="Path to trained RL policy checkpoint (.pth)")
-    parser.add_argument("--conf", type=float, default=0.2, help="Detection confidence threshold")
+    parser.add_argument("--mode", type=str, default="benchmark", choices=["runtime", "benchmark"],
+                        help="Detector mode: 'runtime' (live YOLOX neural network) or 'benchmark' (UAVSwarm YOLOX det.txt)")
+    parser.add_argument("--weights", type=str, default=DEFAULT_YOLOX_WEIGHTS, help="Path to YOLOX model weights (.onnx)")
+    parser.add_argument("--det", type=str, default="", help="Path to YOLOX detection file (det.txt for benchmark mode)")
+    parser.add_argument("--policy", type=str, default=DEFAULT_POLICY, help="Path to our trained RL policy checkpoint (.pth)")
+    parser.add_argument("--conf", type=float, default=0.05, help="Detection confidence threshold")
     parser.add_argument("--output", type=str, default="", help="Path to output tracked video MP4")
     parser.add_argument("--csv", type=str, default="", help="Path to output trajectory CSV")
     parser.add_argument("--json", type=str, default="", help="Path to output trajectory JSON")
@@ -405,31 +475,10 @@ def main():
     video_filename = os.path.basename(video_path)
     base_stem = os.path.splitext(video_filename)[0]
 
-    # Resolve YOLOX Detection file: user explicit argument -> known map -> fallback heuristic
-    det_file = args.det
-    if not det_file:
-        if video_filename in KNOWN_YOLOX_DET_MAP:
-            det_file = KNOWN_YOLOX_DET_MAP[video_filename]
-        else:
-            candidates = [
-                os.path.join(REPO_ROOT, "results", f"{base_stem}_yolox_det.txt"),
-                os.path.join(REPO_ROOT, "results", f"{base_stem}_det.txt"),
-                os.path.join(os.path.dirname(video_path), "det", "det.txt"),
-                os.path.join(os.path.dirname(video_path), "det.txt"),
-            ]
-            for cand in candidates:
-                if os.path.exists(cand):
-                    det_file = cand
-                    break
-
-    if not det_file or not os.path.exists(det_file):
-        print(f"❌ Error: No matching YOLOX detection file found for video: {video_path}")
-        print(f"   Please specify explicitly using --det path/to/det.txt")
-        sys.exit(1)
-
     out_video_path = args.output or os.path.join(REPO_ROOT, "results", f"tracked_yolox_{base_stem}.mp4")
     out_csv_path = args.csv or os.path.join(REPO_ROOT, "results", f"trajectories_yolox_{base_stem}.csv")
     out_json_path = args.json or os.path.join(REPO_ROOT, "results", f"trajectories_yolox_{base_stem}.json")
+    os.makedirs(os.path.dirname(out_video_path), exist_ok=True)
 
     device = torch.device(
         "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -439,14 +488,41 @@ def main():
     print("🛸 DRONE SWARM TRACKER — YOLOX DETECTOR + OUR RL TRACKING MODEL (run3.py)")
     print("=" * 70)
     print(f"🎥 Input Video    : {video_path}")
-    print(f"📦 Object Detector: Benchmark YOLOX ({det_file}, conf >= {args.conf})")
+    print(f"⚙️  Detector Mode  : {args.mode.upper()}")
     print(f"🧠 Tracking Model : OUR RL DroneQNetwork Policy ({args.policy})")
     print(f"🎯 Dynamic Gating : R = clip({BASE_GATE:.0f} + {VEL_COEF:.1f}*v + {MISSED_COEF:.1f}*k, {MIN_GATE:.0f}, {MAX_GATE:.0f}) px")
     print(f"💾 Output Video   : {out_video_path}")
     print(f"📊 Trajectory CSV : {out_csv_path}")
 
-    # Initialize YOLOX Detector
-    detector = YOLOXDetector(det_path=det_file, conf_thresh=args.conf)
+    # Initialize Detector based on selected mode
+    if args.mode == "runtime":
+        if not os.path.exists(args.weights):
+            print(f"❌ Error: YOLOX weights file not found: {args.weights}")
+            sys.exit(1)
+        detector = RuntimeYOLOXDetector(model_path=args.weights, conf_thresh=args.conf)
+    else:
+        # Benchmark mode: resolve detection file
+        det_file = args.det
+        if not det_file:
+            if video_filename in KNOWN_YOLOX_DET_MAP:
+                det_file = KNOWN_YOLOX_DET_MAP[video_filename]
+            else:
+                candidates = [
+                    os.path.join(REPO_ROOT, "results", f"{base_stem}_yolox_det.txt"),
+                    os.path.join(REPO_ROOT, "results", f"{base_stem}_det.txt"),
+                    os.path.join(os.path.dirname(video_path), "det", "det.txt"),
+                    os.path.join(os.path.dirname(video_path), "det.txt"),
+                ]
+                for cand in candidates:
+                    if os.path.exists(cand):
+                        det_file = cand
+                        break
+
+        if not det_file or not os.path.exists(det_file):
+            print(f"❌ Error: No matching YOLOX detection file found for video: {video_path}")
+            print(f"   Please specify explicitly using --det path/to/det.txt or use --mode runtime")
+            sys.exit(1)
+        detector = BenchmarkYOLOXDetector(det_path=det_file, conf_thresh=args.conf)
 
     # Initialize OUR RL Tracker (Kalman Filter + Dynamic Gating + DroneQNetwork + Hungarian)
     tracker = DroneRLTracker(args.policy, device)
@@ -461,7 +537,7 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w, h))
 
-    window_title = f"RL Drone Tracker (YOLOX Detector) — {base_stem}"
+    window_title = f"RL Drone Tracker (YOLOX {args.mode.upper()}) — {base_stem}"
     if not args.headless:
         cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_title, min(1280, int(w * 1.5)), min(720, int(h * 1.5)))
@@ -471,7 +547,7 @@ def main():
     t_start = time.time()
     active_counts = []
 
-    print(f"\n🚀 Running YOLOX detection tracking on {total_frames} frames ({w}x{h} @ {fps:.1f} FPS)...")
+    print(f"\n🚀 Running YOLOX tracking on {total_frames} frames ({w}x{h} @ {fps:.1f} FPS)...")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -479,7 +555,7 @@ def main():
             break
         frame_idx += 1
 
-        # 1. RETRIEVE YOLOX DETECTIONS FOR THIS FRAME
+        # 1. RETRIEVE YOLOX DETECTIONS (LIVE RUNTIME NEURAL NET OR BENCHMARK)
         detections = detector.detect(frame, frame_idx)
 
         # 2. RUN OUR REINFORCEMENT LEARNING DATA ASSOCIATION & TRACKING
@@ -524,14 +600,14 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
 
         # Telemetry HUD Overlay
-        cv2.rectangle(frame, (10, 10), (430, 105), (20, 20, 20), -1)
-        cv2.rectangle(frame, (10, 10), (430, 105), (0, 255, 128), 1)
+        cv2.rectangle(frame, (10, 10), (450, 105), (20, 20, 20), -1)
+        cv2.rectangle(frame, (10, 10), (450, 105), (0, 255, 128), 1)
         cv2.putText(frame, f"Active Drones Traced: {len(active_tracks)}", (20, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(frame, f"Frame: {frame_idx}/{total_frames} ({fps:.0f} FPS playback)", (20, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Detector: YOLOX | Tracker: Our RL Model", (20, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Detector: YOLOX ({args.mode.upper()}) | Tracker: Our RL Model", (20, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 0), 1, cv2.LINE_AA)
 
         writer.write(frame)
 
@@ -579,7 +655,7 @@ def main():
 
     # Print Summary Report
     print("\n" + "=" * 70)
-    print("📈 TRACKING PERFORMANCE SUMMARY (YOLOX + OUR RL TRACKER)")
+    print(f"📈 TRACKING PERFORMANCE SUMMARY (YOLOX {args.mode.upper()} + OUR RL TRACKER)")
     print("=" * 70)
     print(f"⏱️  Processing Time : {elapsed:.2f} seconds ({proc_fps:.1f} FPS)")
     print(f"🎬 Frames Processed: {frame_idx} / {total_frames}")
