@@ -114,8 +114,8 @@ The 5-dimensional feature input to `DroneQNetwork` is normalized as:
 $$\mathbf{s} = \left[ \frac{\Delta x}{R_{\text{dynamic}}}, \; \frac{\Delta y}{R_{\text{dynamic}}}, \; \frac{\text{region\_id}}{7.0}, \; \frac{v_x}{R_{\text{dynamic}}}, \; \frac{v_y}{R_{\text{dynamic}}} \right]$$
 
 ### 4. Global Hungarian Cost Optimization
-To prevent greedy track collisions, candidate assignments are framed as a global bipartite graph matching problem:
-$$C_{i, j} = \|\mathbf{p}_i - \mathbf{z}_j\|_2 \times \Big( 1.5 - Q(\mathbf{s}_{i, j}) \Big)$$
+To prevent greedy track collisions, candidate assignments are framed as a global bipartite graph matching problem. Because the $\gamma = 0.95$ DQN outputs cumulative discounted returns $Q(\mathbf{s}_{i, j}) \in [16, 20]$, raw Q-values are first centered and bounded into $(-1, 1)$ before weighting Euclidean distance:
+$$\tilde{Q}(\mathbf{s}_{i, j}) = \tanh\!\left(\frac{Q(\mathbf{s}_{i, j}) - 17.5}{2.5}\right), \qquad C_{i, j} = \|\mathbf{p}_i - \mathbf{z}_j\|_2 \times \Big( 1.5 - \tilde{Q}(\mathbf{s}_{i, j}) \Big)$$
 The global optimal matching $(\mathbf{r}^*, \mathbf{c}^*)$ is computed via the Hungarian algorithm:
 $$\min_{\mathbf{X}} \sum_{i} \sum_{j} C_{i, j} X_{i, j} \quad \text{s.t.} \quad \sum_j X_{i, j} \le 1, \; \sum_i X_{i, j} \le 1, \; X_{i, j} \in \{0, 1\}$$
 

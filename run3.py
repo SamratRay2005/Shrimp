@@ -362,8 +362,10 @@ class DroneRLTracker:
                     q_vals = self.policy(feats).cpu().numpy().flatten()
 
                 for (j, dx, dy, dist, _), q in zip(cands, q_vals):
-                    # Combine spatial Euclidean distance with learned RL association score
-                    cost_matrix[i, j] = dist * (1.5 - float(q))
+                    # Normalize discounted Q-values (gamma=0.95 -> Q ~ [16, 20]) into (-1, 1)
+                    # so (1.5 - q_norm) stays strictly positive in (0.5, 2.5)
+                    q_norm = math.tanh((float(q) - 17.5) / 2.5)
+                    cost_matrix[i, j] = dist * (1.5 - q_norm)
 
         # Solve optimal bipartite matching
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
