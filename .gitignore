@@ -27,4 +27,3 @@ Thumbs.db
 
 # Intermediate runtime logs and temporary weights
 weight/
-logs/

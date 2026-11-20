@@ -1,6 +1,6 @@
 # Drone Swarm RL Trajectory Tracker (`RM_Shrimp_extension`): Complete First-Principles Study Guide & Engineering Reference
 
-> **Purpose of this document**: A **single, self-contained reference** combining every piece of knowledge from `README.md`, `PLAN.md`, `DEVLOG.md`, and the codebase — explained from **first principles**. It starts from the physics and mathematics of multi-object tracking, walks through every algorithmic pillar (Detection, Kalman Filtering, Dynamic Gating, Polar Subregions, Deep Q-Learning, and Bipartite Hungarian Optimization), documents the complete Phase 0–10 engineering history, cloud training logs, debugging breakthroughs, exact benchmarks, output schemas, and CLI commands so you only need to read `study.md`.
+> **Purpose of this document**: A **single, self-contained reference** combining every piece of knowledge from `README.md`, `PLAN.md`, `DEVLOG.md`, `evaluations/results.md`, `comparision.md`, and the codebase — explained from **first principles**. It starts from the physics and mathematics of multi-object tracking, walks through every algorithmic pillar (Detection, Kalman Filtering, Dynamic Gating, Polar Subregions, Deep Q-Learning, and Bipartite Hungarian Optimization), documents the complete Phase 0–13 engineering history, NVIDIA L4 & T4 cloud training logs, debugging breakthroughs, 36-sequence Tier-A/D/B & cost-ablation benchmarks, output schemas, and CLI commands so you only need to read `study.md`.
 
 ---
 
@@ -10,7 +10,7 @@
 2. [From `Shrimp` to `RM_Shrimp_extension`: Architectural Evolution](#2-from-shrimp-to-rm_shrimp_extension-architectural-evolution)
 3. [End-to-End System Architecture](#3-end-to-end-system-architecture)
 4. [Pillar 1 — Data Engineering & Leakage-Free Splits](#4-pillar-1--data-engineering--leakage-free-splits)
-5. [Pillar 2 — Object Detection: D-FINE Transformer vs. YOLOX-S CNN](#5-pillar-2--object-detection-d-fine-transformer-vs-yolox-s-cnn)
+5. [Pillar 2 — Object Detection: D-FINE-M Transformer vs. YOLOX-M CNN](#5-pillar-2--object-detection-d-fine-m-transformer-vs-yolox-m-cnn)
 6. [Pillar 3 — State Estimation: The 2D Constant-Velocity Kalman Filter](#6-pillar-3--state-estimation-the-2d-constant-velocity-kalman-filter)
 7. [Pillar 4 — Velocity-Adaptive Dynamic Gating & 8-Subregion Geometry](#7-pillar-4--velocity-adaptive-dynamic-gating--8-subregion-geometry)
 8. [Pillar 5 — Reinforcement Learning (DQN) for Data Association](#8-pillar-5--reinforcement-learning-dqn-for-data-association)
@@ -18,7 +18,7 @@
 10. [Track Lifecycle Management & Trajectory Export](#10-track-lifecycle-management--trajectory-export)
 11. [The Three Evaluation Pipelines (`run.py`, `run2.py`, `run3.py`)](#11-the-three-evaluation-pipelines-runpy-run2py-run3py)
 12. [Empirical Benchmarks, Training Curves & Ablation Proof](#12-empirical-benchmarks-training-curves--ablation-proof)
-13. [Complete Phase-by-Phase Engineering & Decision Log (Phases 0–10)](#13-complete-phase-by-phase-engineering--decision-log-phases-010)
+13. [Complete Phase-by-Phase Engineering & Decision Log (Phases 0–13)](#13-complete-phase-by-phase-engineering--decision-log-phases-013)
 14. [Critical Bugs, Cloud Hurdles & Engineering Solutions](#14-critical-bugs-cloud-hurdles--engineering-solutions)
 15. [Output Data Schemas, GUI Controls & CLI Reference](#15-output-data-schemas-gui-controls--cli-reference)
 16. [Repository File Map, Tech Stack & Citations](#16-repository-file-map-tech-stack--citations)
@@ -87,7 +87,7 @@ At a mathematical level, both problems ask the same core question: *"Given a pre
 | :--- | :--- | :--- | :--- |
 | **Operational Goal** | Line-crossing counting (`VectorHysteresisCounter`) | **Continuous 2D Trajectory Tracing** (`.mp4`, `.csv`, `.json`) | Drone swarms require full spatial flight paths per ID, not up/down line counts. |
 | **Dataset Format** | Custom shrimp CSV | **UAVSwarm MOT16** $\to$ COCO JSON + cleaned MOT CSV | Needed sequence-level splits for detectors and clean tracks for RL training. |
-| **Object Detector** | Single `last.onnx` shrimp model | **Dual Fine-Tuned Detectors**: D-FINE (`dfine_m`) & YOLOX-S (`ONNX`) | Tiny aerial drones ($<32\text{ px}$) need high small-object AP (`AP_small`) & fast inference. |
+| **Object Detector** | Single `last.onnx` shrimp model | **Dual Fine-Tuned Detectors**: D-FINE (`HGNetv2-M`, `640×640`) & YOLOX-M (`640×640 ONNX`) | Tiny aerial drones ($<32\text{ px}$) need high small-object AP (`AP_small`) & fast inference. |
 | **Benchmark Isolation** | Single inference runner (`run.py`) | **Three Comparative Pipelines**: `run.py`, `run2.py` (GT oracle), `run3.py` (YOLOX) | Separately proves detector quality vs. pure RL tracker upper bound. |
 | **Training `gate_radius`** | $150\text{ px}$ | **$250\text{ px}$** | Drones move faster with larger pixel displacement from aerial viewpoints. |
 | **Inference Gating** | Fixed $R = 150\text{ px}$ | **Velocity-Adaptive Dynamic Gate** $R_{\text{dynamic}} \in [20, 65]\text{ px}$ | Seals out neighbor drones ($60\text{--}90\text{ px}$ away) during hover while expanding during dashes. |
@@ -113,9 +113,9 @@ During live tracking on any frame $t$, every pipeline executes the same **5-stag
 Frame I_t (H x W x 3 BGR)
    │
    ▼
-[Stage 1: Candidate Extraction]  ──► Pipeline 1 (run.py):  D-FINE HGNetv2-M Transformer
+[Stage 1: Candidate Extraction]  ──► Pipeline 1 (run.py):  D-FINE HGNetv2-M Transformer (conf=0.55)
                                  ──► Pipeline 2 (run2.py): Shuffled GT Boxes (No IDs)
-                                 ──► Pipeline 3 (run3.py): YOLOX-S (ONNX Runtime / det.txt)
+                                 ──► Pipeline 3 (run3.py): YOLOX-M (640x640 ONNX Runtime, conf=0.50 / det.txt)
    │  Outputs unordered detections: [{'cx', 'cy', 'box', 'score'}, ...]
    ▼
 [Stage 2: Kinematic Prediction & Dynamic Gating] (per active track i)
@@ -129,7 +129,7 @@ Frame I_t (H x W x 3 BGR)
    ▼
 [Stage 4: Deep Q-Network Scoring + Global Hungarian Matching]
    │  • DroneQNetwork(5 → 128 → 64 → 1) outputs Q(s_{i,j}) ∈ [16, 20]
-   │  • Q-norm: q_norm = tanh((Q - 17.5) / 2.5) ∈ (-1, 1)
+   │  • Normalized Q: q_norm = tanh((Q - 17.5) / 2.5) ∈ (-1, 1)
    │  • Cost matrix: C_{i,j} = dist_{i,j} * (1.5 - q_norm) > 0
    │  • scipy.optimize.linear_sum_assignment(C) finds global optimal 1-to-1 pairs
    ▼
@@ -165,6 +165,11 @@ Object detectors (D-FINE and YOLOX) train on individual static frames using **CO
    - As documented in `DEVLOG.md`, raw UAVSwarm COCO files used `category_id: 1` (inherited from standard COCO `'person'/'pedestrian'`).
    - In `dfine_core`, `dfine_hgnetv2_m_uavswarm.yml` sets `num_classes: 1` and `remap_mscoco_category: False`. PyTorch's cross-entropy loss expects class targets in $[0, C-1] = \{0\}$. Leaving `category_id: 1` causes an out-of-bounds target crash during training.
    - Therefore, training JSONs (`/content/uavswarm_coco/{train.json, val.json, full_train.json}`) were sanitized to `category_id: 0` with class name `'drone'`.
+3. **Strict Zero-Leakage Detection Protocol (`train_85` / `val_15` / `test_official`)**:
+   - For final NVIDIA L4 (`24 GB`) cloud retraining of both **D-FINE HGNetv2-M** and **YOLOX-M**, the 36 official training sequences were partitioned chronologically per sequence without touching the official test set:
+     - **`train_85.json`** (`5,805` images, `42,406` drone boxes): First `85%` of frames inside each of the `36` training sequences.
+     - **`val_15.json`** (`1,039` images, `7,255` drone boxes): Trailing `15%` of frames inside each training sequence — used **exclusively** for checkpoint selection (`best_stg2.pth` epoch `14` for `D-FINE-M`; epoch `20` for `YOLOX-M`) and F1-optimal confidence threshold tuning (`0.55` for `D-FINE-M`; `0.50` for `YOLOX-M`).
+     - **`test_official.json` / `evaluations/data/uavswarm_test_gt/`** (`5,754` frames across all `36` unseen official test sequences `UAVSwarm-02..72`, `37,703` COCO annotations / `37,947` MOT GT boxes): Held out cleanly and evaluated **strictly once** at those locked `val_15` thresholds.
 
 ### 4.3 Bridge 2: MOT16 $\to$ Clean Trajectory CSV (`shrimp_drone/mot_to_csv.py`)
 
@@ -180,40 +185,41 @@ Running this across the 36 UAVSwarm training sequences converted **355 raw track
 
 ---
 
-## 5. Pillar 2 — Object Detection: D-FINE Transformer vs. YOLOX-S CNN
+## 5. Pillar 2 — Object Detection: D-FINE-M Transformer vs. YOLOX-M CNN
 
 To avoid tying the RL tracker to a single detector paradigm, the project fine-tuned and benchmarked two fundamentally different object detector families on UAVSwarm.
 
 ### 5.1 Detector A: D-FINE (`HGNetv2-M` Hybrid Transformer) — Used in `run.py`
 
-**D-FINE** (*Fine-grained Distribution Refinement for Real-Time Object Detection*) is a modern DETR-style (DEtection TRansformer) architecture:
+**D-FINE** (*Fine-grained Distribution Refinement for Real-Time Object Detection*, `19.19M` parameters, `56.33 GFLOPS`) is a modern DETR-style (DEtection TRansformer) architecture:
 
 1. **Backbone (`HGNetv2-B2`)**: Extracts multi-scale CNN feature maps at 3 pyramid levels (`return_idx: [1, 2, 3]`, channel widths `[384, 768, 1536]`) with `use_lab: True`.
 2. **Hybrid Encoder**: Projects features to `hidden_dim: 256` (`depth_mult: 0.67`) and applies self-attention on the coarsest scale plus cross-scale feature fusion.
 3. **D-FINE Transformer Decoder (`num_layers: 4`)**: Instead of regressing raw bounding-box coordinates $(x, y, w, h)$ as brittle point estimates, D-FINE predicts **probability distributions over bounding-box edge offsets** and iteratively refines those distributions across 4 decoder layers (Fine-grained Distribution Refinement, FDR).
-4. **Deployment Constraint (`run.py`)**:
+4. **Deployment & Environment Safeguards (`run.py` & `dfine_core`)**:
    - The hybrid encoder's positional embeddings (`pos_embed`) have a fixed size of **400 tokens**, corresponding to a $20 \times 20$ feature map at stride 32, i.e., $640 \times 640$ input resolution (`INPUT_W = 640`, `INPUT_H = 640`).
-   - At runtime, `DFineDetector` converts BGR $\to$ RGB, resizes to `640x640`, runs `cfg.model.eval()` and `cfg.postprocessor.deploy()` (EMA weights from `checkpoints/dfine_drone_weights.pth`, `SCORE_THRES = 0.35`), and scales boxes back to `orig_size = (w, h)`.
+   - At runtime, `DFineDetector` converts BGR $\to$ RGB, resizes to `640x640`, runs `cfg.model.eval()` and `cfg.postprocessor.deploy()` using clean EMA weights from `checkpoints/dfine_drone_weights.pth` (`78.57 MB`, MD5 `cba23409f653b79e347db3c9430a338b`, `SCORE_THRES = 0.55` locked on `val_15`), and scales boxes back to `orig_size = (w, h)`.
+   - `dfine_core/src/core/_config.py` and `dfine_core/src/solver/det_engine.py` guard `torch.utils.tensorboard.SummaryWriter` with `TYPE_CHECKING` and a lazy property import in `BaseConfig.writer` so inference runs cleanly on NumPy 2.x without triggering incompatible local TensorFlow imports.
 
-### 5.2 Detector B: YOLOX-S (Anchor-Free Decoupled CNN + ONNX) — Used in `run3.py`
+### 5.2 Detector B: YOLOX-M (Anchor-Free Decoupled CNN + ONNX) — Used in `run3.py`
 
-**YOLOX-S** (`depth=0.33, width=0.50`, 8.94M parameters) takes a completely different, purely convolutional approach:
+**YOLOX-M** (`depth=0.67, width=0.75`, `25.28M` parameters, `73.73 GFLOPS`) takes a purely convolutional anchor-free approach (upgraded from an earlier `8.94M`-parameter `YOLOX-S` prototype for stronger unseen-scene generalization):
 
 1. **Anchor-Free Grid Prediction**:
    - At $640 \times 640$ input resolution, its Feature Pyramid Network outputs feature maps at 3 strides ($s \in \{8, 16, 32\}$), giving spatial grids of $80\times 80$, $40\times 40$, and $20\times 20$:
      $$80^2 + 40^2 + 20^2 = 6400 + 1600 + 400 = 8{,}400\text{ spatial cells}$$
    - Unlike older anchor-based YOLOs, each cell directly predicts one box without predefined anchor aspect ratios — advantageous for tiny variable-aspect drones.
 2. **Decoupled Head**: Splits classification and bounding-box regression into separate convolutional branches so localization gradients do not interfere with objectness classification.
-3. **ONNX Output Tensor & Post-Processing (`RuntimeYOLOXDetector.detect()` in `run3.py`)**:
-   - The input image is **letterbox-resized** (aspect-ratio preserving resize + constant `114` gray padding to $640 \times 640$) without BGR$\to$RGB swap (matching YOLOX's BGR training convention).
-   - The ONNX session produces predictions of shape `(8400, 4 + 1 + C)`:
+3. **ONNX Output Tensor & Post-Processing (`RuntimeYOLOXDetector` in `run3.py`)**:
+   - The input image is **letterbox-resized** (aspect-ratio preserving resize + constant `114` gray padding to the ONNX model's auto-detected `(H, W)` input shape, `640×640`) without BGR$\to$RGB swap (matching YOLOX's BGR training convention).
+   - The ONNX session (`checkpoints/yolox_drone_finetuned.onnx`, `101.20 MB`, MD5 `c6a9097d1f490a912c8fa62c774589fe`) produces predictions of shape `(8400, 4 + 1 + C)`:
      - Columns `0:4`: `[cx, cy, w, h]` in letterboxed $640 \times 640$ pixel space.
      - Column `4`: `obj_conf` (probability an object exists in this cell).
-     - Columns `5:`: `cls_confs` (for single-class `yolox_drone_finetuned.onnx`, shape is `(8400, 6)`; for 80-class COCO baseline `yolox_s.onnx`, shape is `(8400, 85)`).
+     - Columns `5:`: `cls_confs` (for single-class `yolox_drone_finetuned.onnx`, shape is `(8400, 6)`; for 80-class COCO fallback `checkpoints/yolox_s.onnx`, shape is `(8400, 85)`).
    - Final confidence per cell is `score = obj_conf * max(cls_confs)`.
-   - Boxes above `conf_thresh` (default `0.05`) are divided by `scale` to return to original video coordinates, then deduplicated using **Non-Maximum Suppression (`cv2.dnn.NMSBoxes`, `nms_thresh=0.45`)**.
+   - Boxes above `conf_thresh` (default **`0.50`**, locked on `val_15`) are divided by `scale` to return to original video coordinates, then deduplicated using **Non-Maximum Suppression (`cv2.dnn.NMSBoxes`, `nms_thresh=0.45`)**.
 
-> **Why YOLOX-S outperformed D-FINE on UAVSwarm**: Trained for 12 epochs (`Mosaic=1.0`, `MixUp=0.5`, `Scale=(0.5, 1.5)`, Cosine LR, FP16), YOLOX's high-resolution stride-8 FPN head ($80\times 80$ grid) preserved tiny drone edges better than D-FINE's transformer tokens, boosting $\text{AP}_{\text{small}}$ from $46.0\%$ to **$52.2\%$** and $\text{AP}_{75}$ from $42.8\%$ to **$52.9\%$**, at **$>2\times$ faster speed** ($12.3\text{ ms}$ vs. $25.5\text{ ms}$) and **$9\times$ smaller model size** ($35.85\text{ MB}$ ONNX vs. $313.5\text{ MB}$ full checkpoint / $75\text{ MB}$ EMA weights). Meanwhile, D-FINE kept slightly higher raw recall ($96.0\%$ vs. $93.8\%$).
+> **Zero-Leakage Unseen Test Insight (`D-FINE-M` vs. `YOLOX-M` on `5,754` Official Test Frames)**: While `YOLOX-M` reaches higher accuracy on within-sequence `val_15` validation frames (`67.84%` AP / `96.82%` AP50 vs `60.65%` / `95.69%`), **`D-FINE HGNetv2-M` generalizes substantially better across unseen flight domains on `test_official`** — achieving **`48.94%` mAP (`+4.10%`)**, **`92.86%` $\text{AP}_{50}$ (`+2.58%`)**, **`46.14%` $\text{AP}_{75}$ (`+8.02%`)**, **`46.47%` $\text{AP}_{\text{small}}$ (`+4.40%`)**, and **`59.94%` $\text{AR}@100$ (`+8.44%`)** in a `22%` smaller weight file (`78.57 MB` vs. `101.20 MB`). Meanwhile, **`YOLOX-M` runs `2.0×` faster on NVIDIA L4 (`57.03 FPS` / `17.53 ms` vs. `28.77 FPS` / `34.76 ms`)** and matches its stability when paired with `DroneRLTracker` (`87.18%` IDF1, `54` IDSW vs. `96` IDSW).
 
 ---
 
@@ -402,6 +408,8 @@ Finally, every matched pair $(r, c)$ passes two strict filters:
    $$\text{step\_d} = \|\mathbf{p}_c - \mathbf{p}_{\text{last}}^{(r)}\|_2 \le R_{\text{dynamic}}^{(r)} + 5.0\text{ px}$$
    If a Kalman coast drifted slightly, this prevents an unrealistic single-frame jump relative to the last confirmed observation.
 
+*(For a controlled 36-sequence comparison against alternative Hungarian cost formulations `-q`, `-q/(d+eps)`, `d/q`, and pure `dist` in `evaluations/testing_different_stratergies/`, see **Section 12.5**.)*
+
 ---
 
 ## 10. Track Lifecycle Management & Trajectory Export
@@ -436,10 +444,10 @@ A core scientific strength of `RM_Shrimp_extension` is its **three-pillar experi
          ▼                               ▼                               ▼
    [ Pipeline 1 ]                  [ Pipeline 2 ]                  [ Pipeline 3 ]
        run.py                          run2.py                         run3.py
- (Fine-Tuned D-FINE)           (Ground Truth Oracle)           (YOLOX-S Runtime/Bench)
+ (Fine-Tuned D-FINE-M)         (Ground Truth Oracle)          (YOLOX-M Runtime/Bench)
          │                               │                               │
-   HGNetv2-M PyTorch           GT Boxes w/ IDs Stripped        ONNX Runtime (.onnx) OR
-   (640x640, conf>=0.35)        & Shuffled Every Frame         Official det.txt (conf>=0.05)
+   HGNetv2-M PyTorch           GT Boxes w/ IDs Stripped      YOLOX-M ONNX (conf>=0.50) OR
+   (640x640, conf>=0.55)        & Shuffled Every Frame         Official det.txt
          │                               │                               │
          └───────────────────────┬───────┴───────────────────────────────┘
                                  │  Unified Detection Format:
@@ -468,63 +476,64 @@ result_with_our_dfine/   result_without_custom_   result_with_yolox/
    - **Purpose**: **Pure Tracker Upper-Bound Benchmark**. Reads ground-truth boxes (`uavswarm_*_gt.txt`), keeps only single-frame boxes (`gt_id` is *never* passed into `DroneRLTracker`'s matching logic; it is only carried as passive metadata on the box for display/comparison), and explicitly runs **`random.shuffle(detections)`** on every frame so list order leaks zero identity information.
    - Proves mathematically that trajectory construction, ID persistence, and zero jumps come from our Kalman + Dynamic Gate + RL + Hungarian tracker itself.
 3. **Pipeline 3 — `run3.py` (`result_with_yolox/`)**:
-   - **Purpose**: Evaluates the faster, lighter **YOLOX-S** detector in two modes:
-     - `--mode runtime`: Live ONNX Runtime inference using our fine-tuned `checkpoints/yolox_drone_finetuned.onnx` (falls back to COCO `checkpoints/yolox_s.onnx` if absent).
+   - **Purpose**: Evaluates the faster **YOLOX-M (`640×640`)** detector in two modes:
+     - `--mode runtime`: Live ONNX Runtime inference using our fine-tuned `checkpoints/yolox_drone_finetuned.onnx` (auto-detects input shape; falls back to COCO `checkpoints/yolox_s.onnx` if absent).
      - `--mode benchmark`: Loads the official precomputed `UAVSwarm` benchmark YOLOX detections (`results/uavswarm_*_yolox_det.txt`) for apples-to-apples literature comparison.
 
-| Metric / Property | Pipeline 1 (`run.py`: D-FINE + RL) | Pipeline 2 (`run2.py`: GT + RL) | Pipeline 3 (`run3.py`: YOLOX-S + RL) |
+| Metric / Property | Pipeline 1 (`run.py`: D-FINE-M + RL) | Pipeline 2 (`run2.py`: GT + RL) | Pipeline 3 (`run3.py`: YOLOX-M + RL) |
 | :--- | :---: | :---: | :---: |
-| **Detector** | D-FINE HGNetv2-M Transformer | Oracle Bounding Boxes (Shuffled, No IDs) | Fine-Tuned YOLOX-S CNN |
-| **Parameters** | $19.19\text{ M}$ ($19{,}187{,}359$) | N/A (Ground Truth) | **$8.94\text{ M}$** |
-| **Model Size** | $313.5\text{ MB}$ full ckpt ($75\text{ MB}$ EMA `.pth`) | N/A | **$35.85\text{ MB}$ (`.onnx`)** |
-| **GPU Latency (Tesla T4)** | $25.5\text{ ms}$ ($\approx 39\text{ FPS}$) | $< 1\text{ ms}$ (direct memory) | **$12.3\text{ ms}$ ($\approx 81\text{ FPS}$)** |
-| **$\text{mAP}@[0.50:0.95]$** | $48.2\%$ | $100.0\%$ (Upper bound) | **$53.44\%$** |
-| **$\text{AP}_{50}$** | $92.6\%$ | $100.0\%$ | **$94.0\%$** |
-| **$\text{AP}_{75}$** | $42.8\%$ | $100.0\%$ | **$52.9\%$** |
-| **$\text{AP}_{\text{small}}$ ($<32\text{ px}$)** | $46.0\%$ | $100.0\%$ | **$52.2\%$** |
+| **Detector** | D-FINE HGNetv2-M Transformer | Oracle Bounding Boxes (Shuffled, No IDs) | Fine-Tuned YOLOX-M CNN (`640×640`) |
+| **Parameters / Compute** | **$19.19\text{ M}$ (`56.33 GFLOPS`)** | N/A (Ground Truth) | $25.28\text{ M}$ (`73.73 GFLOPS`) |
+| **Artifact Size** | **$78.57\text{ MB}$ (EMA `.pth`)** | N/A | $101.20\text{ MB}$ (`.onnx`) |
+| **GPU Latency (NVIDIA L4)** | $34.76\text{ ms}$ ($28.77\text{ FPS}$) | $< 1\text{ ms}$ (direct memory) | **$17.53\text{ ms}$ ($57.03\text{ FPS}$)** |
+| **Official Test $\text{mAP}@[0.50:0.95]$** | **$48.94\%$** | $100.0\%$ (Upper bound) | $44.84\%$ |
+| **Official Test $\text{AP}_{50}$** | **$92.86\%$** | $100.0\%$ | $90.28\%$ |
+| **Official Test $\text{AP}_{75}$** | **$46.14\%$** | $100.0\%$ | $38.12\%$ |
+| **Official Test $\text{AP}_{\text{small}}$ ($<32\text{ px}$)** | **$46.47\%$** | $100.0\%$ | $42.07\%$ |
+| **Locked `val_15` Conf Threshold** | `0.55` (`val_15 F1 = 94.25%`) | N/A | `0.50` (**`val_15 F1 = 96.62%`**) |
+| **36-Seq MOT (`MOTA / HOTA / IDF1 / IDSW`)** | **`82.87% / 68.12% / 86.91% / 96`** | `99.84% / 97.14% / 96.12% / 44` | `81.94% / 66.85% / 87.18% / 54` |
 | **Primary Output Folder** | `result_with_our_dfine/` | `result_without_custom_object_detection/` | `result_with_yolox/` |
-| **Ideal Use Case** | Robust global context, high recall | Empirical upper-bound tracking evaluation | High-speed real-time edge drone deployment |
+| **Ideal Use Case** | Highest unseen accuracy & global context | Empirical upper-bound tracking evaluation | **$2.0\times$ faster** real-time deployment & low IDSW |
 
 ---
 
 ## 12. Empirical Benchmarks, Training Curves & Ablation Proof
 
-### 12.1 Detector Comparison (UAVSwarm Validation Split: 3,394 images, 36 sequences, 24,265 annotations)
+### 12.1 Detector Comparison (Tier D — `val_15` & Unseen `5,754`-Frame `test_official`, NVIDIA L4)
 
-| Performance Dimension | Fine-Tuned D-FINE (HGNetv2-M) | Fine-Tuned YOLOX-S | Difference / Winner |
-| :--- | :---: | :---: | :--- |
-| **Detector Architecture** | Hybrid Transformer (CNN + Attention + FDR) | Anchor-Free Decoupled CNN | Different trade-offs |
-| **Model Parameters** | $19.19\text{ M}$ | **$8.94\text{ M}$** | **YOLOX is $53\%$ lighter** |
-| **Checkpoint Size** | $313.5\text{ MB}$ full ($75\text{ MB}$ EMA weights) | **$35.85\text{ MB}$ (ONNX)** | **YOLOX is $9\times$ smaller** |
-| **Inference Latency (T4 GPU)** | $25.5\text{ ms / frame}$ ($\sim 39\text{ FPS}$) | **$12.3\text{ ms / frame}$ ($\sim 81.3\text{ FPS}$)** | **YOLOX is $> 2\times$ faster** |
-| **$\text{AP}_{50}$ (Drone Detection)** | $92.6\%$ | **$94.0\%$** | **YOLOX ($+1.4\%$)** |
-| **$\text{AP}_{75}$ (Strict Localization)** | $42.8\%$ | **$52.9\%$** | **YOLOX ($+10.1\%$)** |
-| **$\text{AP}_{\text{small}}$ (Drones $< 32\text{ px}$)** | $46.0\%$ | **$52.2\%$** | **YOLOX ($+6.2\%$)** |
-| **$\text{AP}_{\text{medium}}$ ($32\text{--}96\text{ px}$)** | $63.6\%$ | **$64.7\%$** | **YOLOX ($+1.1\%$)** |
-| **Overall $\text{mAP}@[0.50:0.95]$** | $48.2\%$ | **$53.44\%$** | **YOLOX ($+5.24\%$)** |
-| **Operational Recall ($\text{IoU}=0.50$)** | **$96.0\%$** | $93.8\%$ | **D-FINE ($+2.2\%$)** |
-| **Precision** | **$92.0\%$** | $91.5\%$ | **D-FINE ($+0.5\%$)** |
+Trained under strict zero test-set leakage (`train_85`: `5,805` images / `42,406` boxes; `val_15`: `1,039` images / `7,255` boxes for checkpoint & confidence selection) and evaluated once on the **official unseen `UAVSwarm/test` split (`5,754` frames across `36` sequences, `37,703` COCO annotations)** on **NVIDIA L4 (24 GB)** ([evaluations/results.md](evaluations/results.md), [dfine_eval_metrics.json](evaluations/results/tier_b/dfine_eval_metrics.json), [yolox_eval_metrics.json](evaluations/results/tier_b/yolox_eval_metrics.json)):
 
-*(Additional D-FINE `COCOeval_opt` metrics recorded in `DEVLOG.md`: Recall $= 0.914$, $\text{F1 Score} = 0.917$, $1{,}053$ state-dict tensors.)*
+| Performance Dimension | Split | Fine-Tuned `D-FINE HGNetv2-M` | Fine-Tuned `YOLOX-M (640×640)` | Difference / Winner |
+| :--- | :--- | :---: | :---: | :--- |
+| **Architecture & Params** | — | Hybrid Transformer (`19.19M` / `56.33 GFLOPS`) | Decoupled CNN (`25.28M` / `73.73 GFLOPS`) | **D-FINE has `24%` fewer params** |
+| **Checkpoint / Artifact Size** | — | **`78.57 MB`** EMA `.pth` (`cba23409...`) | `101.20 MB` ONNX (`c6a9097d...`) | **D-FINE is `22%` smaller** |
+| **Locked `val_15` Conf / F1** | `val_15` | `conf = 0.55` (`P=93.55%, R=94.97%, F1=94.25%`) | `conf = 0.50` (**`P=96.46%, R=96.79%, F1=96.62%`**) | Both leak-free on `val_15` |
+| **Validation `AP` / `AP50` / `AP75`** | `val_15` (`1,039` imgs) | $60.65\%$ / $95.69\%$ / $69.10\%$ | **$67.84\%$ / $96.82\%$ / $78.74\%$** | `YOLOX-M` converges higher in-domain |
+| **Inference Speed (L4 GPU, b=1)** | `test_official` | $34.76\text{ ms}$ ($28.77\text{ FPS}$) | **$17.53\text{ ms}$ ($57.03\text{ FPS}$)** | **`YOLOX-M` is `2.0×` faster** |
+| **Overall $\text{mAP}@[0.50:0.95]$** | **Official Test (`5,754` imgs)** | **$48.94\%$** | $44.84\%$ | **`D-FINE-M` (`+4.10%`)** |
+| **$\text{AP}_{50}$ (Drone Detection)** | **Official Test (`5,754` imgs)** | **$92.86\%$** | $90.28\%$ | **`D-FINE-M` (`+2.58%`)** |
+| **$\text{AP}_{75}$ (Strict Localization)** | **Official Test (`5,754` imgs)** | **$46.14\%$** | $38.12\%$ | **`D-FINE-M` (`+8.02%`)** |
+| **$\text{AP}_{\text{small}}$ ($< 32\text{ px}$)** | **Official Test (`5,754` imgs)** | **$46.47\%$** | $42.07\%$ | **`D-FINE-M` (`+4.40%`)** |
+| **$\text{AP}_{\text{medium}}$ ($32\text{--}96\text{ px}$)** | **Official Test (`5,754` imgs)** | **$60.84\%$** | $56.51\%$ | **`D-FINE-M` (`+4.33%`)** |
+| **$\text{AP}_{\text{large}}$ ($> 96\text{ px}$)** | **Official Test (`5,754` imgs)** | **$70.19\%$** | $60.39\%$ | **`D-FINE-M` (`+9.80%`)** |
+| **$\text{AR}@100$ (Max-100 Recall)** | **Official Test (`5,754` imgs)** | **$59.94\%$** | $51.50\%$ | **`D-FINE-M` (`+8.44%`)** |
 
-### 12.2 Training Convergence Logs (Colab Tesla T4 GPU)
+*(Historical note: During earlier Phase 4/9 exploratory work on Tesla T4 using COCO pre-split `val_half.json` [`3,394` imgs], an initial `D-FINE` run hit `48.2%` mAP / `92.6%` AP50 and an initial `8.94M`-param `YOLOX-S` [`35.85 MB` ONNX] prototype hit `53.44%` mAP / `94.0%` AP50 before upgrading to `YOLOX-M` under the stricter `train_85`/`val_15`/`test_official` zero-leakage protocol.)*
 
-1. **D-FINE HGNetv2-M Training (`PID 9677`, 4.5 GB VRAM, TensorBoard Logs)**:
-   - Total loss dropped from **$39.11 \to 22.27$**.
-   - Bounding box L1 loss (`loss_bbox`) dropped **$7\times$** from **$0.4775 \to 0.0687$**.
-   - Generalized IoU loss (`loss_giou`) dropped from **$1.8226 \to 0.7566$**.
-2. **YOLOX-S Cloud Fine-Tuning (`yolox-trainer`, Tesla T4 15.6 GB VRAM, 12 Epochs, FP16)**:
+### 12.2 Training Convergence Logs (NVIDIA L4 Production & Historical T4 Runs)
 
-| Epoch | Total Loss | $\text{mAP}@[0.50:0.95]$ | $\text{AP}_{50}$ | $\text{AP}_{75}$ | $\text{AP}_{\text{small}}$ |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| **Epoch 1** | $4.40$ | $32.1\%$ | $76.4\%$ | — | — |
-| **Epoch 5** | $2.70$ | $51.4\%$ | $92.9\%$ | — | — |
-| **Epoch 10** | $2.30$ | $53.1\%$ | $93.1\%$ | $52.0\%$ | — |
-| **Epoch 12 (Final)** | **$2.00$** | **$53.44\%$** | **$94.0\%$** | **$52.9\%$** | **$52.2\%$** |
-
-3. **RL Policy (`DroneAgent`) Training**:
-   - Verified 17 simultaneous candidates per step (4 background random clutter + 12 real swarm drone hard negatives + 1 ground truth).
-   - Benchmarked at 10 epochs in $3.63\text{ s}$ on Tesla T4; trained full **600 epochs** with $\epsilon: 1.0 \to 0.05$, saving `checkpoints/drone_tracker_policy_best.pth` (`39.8 KB`).
+1. **Production D-FINE HGNetv2-M (`logs/dfine_l4_train.log`, NVIDIA L4 24 GB, 15 Epochs, `79.36 min`)**:
+   - Initialized from `dfine_m_obj2coco.pth` (`stop_epoch=12`, `640×640`, `total_batch_size=24`, AMP + ModelEMA).
+   - Logged `val_15` AP progressed `49.8%` (`90.2%` AP50) $\to$ `56.4%` (`94.0%`) $\to$ `58.3%` (`95.1%`) up to **`best_stg2.pth` (epoch 14)**: `AP = 60.65%`, `AP50 = 95.69%`, `AP75 = 69.10%`, `AP_small = 58.58%`, `AR@100 = 68.45%` (outperforming `best_stg1.pth` ep 11 at `60.24%` AP). Epoch 10 $\to$ 14 training loss converged from `17.9622` to `16.4079` (`loss_bbox = 0.0292`, `loss_giou = 0.2843`).
+2. **Production YOLOX-M (`logs/yolox_l4_train.log`, NVIDIA L4 24 GB, 20 Epochs, `47.60 min`)**:
+   - Initialized from `yolox_m.pth` (`640×640`, `multiscale_range=2`, `-b 32`, `--fp16`, `no_aug_epochs=5`).
+   - Logged `val_15` AP progressed across evaluations: `48.5%` (`94.5%` AP50) $\to$ `52.8%` (`95.3%`) $\to$ `56.1%` (`95.7%`) $\to$ `64.7%` (`96.7%`) $\to$ `66.0%` (`96.8%`) $\to$ `66.6%` (`96.8%`) $\to$ **`67.84%` AP (`96.82%` AP50, `78.74%` AP75, `67.40%` AP_small)** at Epoch 20.
+3. **RL Policy (`DroneAgent`) Training (`checkpoints/drone_tracker_policy_best.pth`, `39.8 KB`)**:
+   - Verified `17` simultaneous candidates per step (`4` background random clutter + up to `12` real swarm drone hard negatives + `1` ground truth).
+   - Benchmarked at `10` epochs in `3.63 s` on Tesla T4; trained full **`600` epochs** with $\epsilon: 1.0 \to 0.05$.
+4. **Historical Phase 4/9 Tesla T4 Prototype Runs (Archived Reference)**:
+   - Earlier `D-FINE` T4 run (`PID 9677`): total loss `39.11 -> 22.27`, `loss_bbox 0.4775 -> 0.0687`, `loss_giou 1.8226 -> 0.7566`; `val_half` `48.2%` mAP.
+   - Earlier `YOLOX-S` (`8.94M`, `12` epochs, `FP16`) T4 run: total loss `4.40 -> 2.70 -> 2.30 -> 2.00`, `val_half` `53.44%` mAP / `94.0%` AP50 (`81.3 FPS` T4).
 
 ### 12.3 Tracking Ablation: Static Gate + Greedy vs. Dynamic Gate + Hungarian (`UAVSwarm-02`, 156 Frames)
 
@@ -554,9 +563,82 @@ Evaluated against `results/uavswarm_02_gt.txt` (2,984 annotations, 25 FPS):
 
 *(Note: By comparison, the earlier Phase 5 static $250\text{ px}$ gate baseline ran at $6.8\text{ FPS}$ end-to-end on T4 ($22.95\text{ s}$ total), tracing $21\text{--}28$ active drones/frame and $3{,}675$ points across $75$ tracks with 75th-percentile track length $123.5$ frames—where top IDs 1, 2, 10, 11, 12, 13, 15, 17, 18, 19 lasted 156 frames only because ID jumping kept tracks artificially alive across $1{,}059$ jumps.)*
 
-### 12.4 Multi-Sequence Benchmarks Across All Evaluation Runs
+### 12.4 Full 36-Sequence MOT Benchmark: Tier A (Oracle) & Tier B (End-to-End)
 
-#### A. Headline Empirical Tracking Benchmarks (`README.md`)
+Using `evaluations/mot_metrics.py` (`MOTA`, `IDF1`, and 19-threshold `HOTA`), we evaluated all **36 official UAVSwarm test sequences (`5,754` frames, `325` GT tracks, `37,947` MOT GT boxes)** under both **Tier A** (`evaluations/evaluate_tracking.py` — shuffled GT boxes, zero ID leakage) and **Tier B** (`evaluations/evaluate_end_to_end.py` — L4 `D-FINE-M conf=0.55` and `YOLOX-M conf=0.50` detections) ([evaluations/results.md](evaluations/results.md)):
+
+| Tier / Detector Setup | Tracker Method | MOTA (%) ↑ | HOTA (%) ↑ | DetA (%) ↑ | AssA (%) ↑ | IDF1 (%) ↑ | IDSW ↓ | Avg Purity (%) ↑ | CPU FPS (Assoc) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Tier A (`Oracle GT`, 36 Seqs)** | **`DroneRLTracker` (Ours)** | **99.84** | **97.14** | 99.96 | **94.41** | **96.12** | 44 | **99.32** | 1,599.5 |
+| **Tier A (`Oracle GT`, 36 Seqs)** | `DynGate_Hungarian_NoRL` (`dist`) | **99.84** | 97.13 | 99.96 | 94.39 | **96.12** | **42** | **99.32** | 3,631.1 |
+| **Tier A (`Oracle GT`, 36 Seqs)** | `Kalman_IoU_Hungarian` (SORT) | 99.00 | 94.33 | 99.52 | 89.41 | 92.31 | 197 | 99.03 | 3,462.6 |
+| **Tier A (`Oracle GT`, 36 Seqs)** | `Static250_GreedyRL` (Shrimp) | 99.19 | 92.96 | **100.00** | 86.41 | 91.19 | 307 | 91.97 | 1,559.0 |
+| **Tier B (`D-FINE-M`, `conf=0.55`)** | **`DroneRLTracker` (Ours)** | **82.87** | **68.12** | 64.93 | **72.52** | **86.91** | **96** | **99.43** | 1,735.1 *(+34.8ms L4)* |
+| **Tier B (`D-FINE-M`, `conf=0.55`)** | `DynGate_Hungarian_NoRL` | 82.86 | 68.09 | 64.93 | 72.48 | 86.88 | 99 | **99.43** | 3,710.0 |
+| **Tier B (`D-FINE-M`, `conf=0.55`)** | `Kalman_IoU_Hungarian` (SORT) | 82.42 | 67.03 | 64.81 | 70.44 | 84.76 | 209 | 99.09 | **4,225.8** |
+| **Tier B (`D-FINE-M`, `conf=0.55`)** | `Static250_GreedyRL` (Shrimp) | 80.87 | 62.05 | **64.96** | 60.52 | 75.51 | 861 | 83.61 | 1,706.7 |
+| **Tier B (`YOLOX-M`, `conf=0.50`)** | **`DroneRLTracker` (Ours)** | **81.94** | **66.85** | 62.84 | **72.52** | **87.18** | **54** | **99.42** | 1,766.8 *(+17.5ms L4)* |
+| **Tier B (`YOLOX-M`, `conf=0.50`)** | `DynGate_Hungarian_NoRL` | **81.94** | **66.85** | 62.84 | **72.52** | **87.18** | **54** | **99.42** | 3,296.1 |
+| **Tier B (`YOLOX-M`, `conf=0.50`)** | `Kalman_IoU_Hungarian` (SORT) | 81.37 | 65.65 | 62.65 | 70.23 | 84.61 | 170 | 99.18 | **3,873.7** |
+| **Tier B (`YOLOX-M`, `conf=0.50`)** | `Static250_GreedyRL` (Shrimp) | 80.62 | 60.87 | **62.88** | 60.49 | 77.21 | 569 | 88.14 | 1,586.3 |
+
+- **Diagnostic Subsets (`DroneRLTracker`)**:
+  - **Local 4 (`UAVSwarm-02, 04, 08, 14`)**: Tier A = `99.99% MOTA / 99.88% HOTA / 99.84% IDF1 / 1 IDSW / 100.00% Purity`; Tier B `D-FINE-M` = `90.73% / 68.95% / 94.60% / 11`; Tier B `YOLOX-M` = `91.32% / 68.62% / 95.22% / 3`.
+  - **Literature Subset (`UAVSwarm-06, 28, 30, 46`)**: Tier A = `99.58% MOTA / 94.09% HOTA / 92.96% IDF1 / 20 IDSW`; Tier B `D-FINE-M` = `79.52% / 62.53% / 77.68% / 37`; Tier B `YOLOX-M` = `59.59% / 60.27% / 73.86% / 19`.
+- **Key Tier-A Findings (`23/36` sequences hit `100.00%`, `31/36 > 92%` HOTA)**:
+  1. Dynamic gating + Hungarian cuts Tier-A ID switches by **`7.0×` (`307 -> 44`)** vs. `Static250_GreedyRL`, and cuts Tier-B ID switches by **`2.2×–3.1×` over SORT (`209 -> 96`, `170 -> 54`)** and **`9×–10.5×` over `Static250_GreedyRL` (`861 -> 96`, `569 -> 54`)**.
+  2. **Root Causes of the 44 Tier-A IDSW & 17 FN**: *(a)* Long GT occlusion gaps exceeding `MAX_MISSED = 8` (`UAVSwarm-28, 38, 46, 70, 72` have `9–43` frame gaps); *(b)* raw-pixel `[20, 65] px` gate overflow on high-resolution/fast sequences (`UAVSwarm-44` `1919×870`, `UAVSwarm-52` `max_speed = 64.07 px/f`); and *(c)* training at fixed `gate_radius=250.0` vs. `[20, 65] px` inference scaling.
+
+### 12.5 Hungarian Cost-Matrix Formulation Ablation (`evaluations/testing_different_stratergies/`)
+
+We evaluated five alternative in-gate (`dist <= dyn_gate`) Hungarian cost functions across all **36 official test sequences (`5,754` frames, `37,947` GT boxes)** in [evaluations/testing_different_stratergies/](evaluations/testing_different_stratergies/) and [evaluations/results.md](evaluations/results.md):
+
+| Mode / Detector | Cost Matrix (`dist <= dyn_gate`) | Method Identifier | MOTA (%) ↑ | HOTA (%) ↑ | AssA (%) ↑ | IDF1 (%) ↑ | IDSW ↓ | Avg Purity (%) | FPS (CPU) |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Tier A: Oracle GT** | **`dist * (1.5 - q_norm)`** | **`DroneRLTracker` (Ours)** | **99.84** | **97.14** | **94.41** | **96.12** | 44 | **99.32** | 1,599.5 |
+| **Tier A: Oracle GT** | `-q / (d + 1.0)` | `DynGate_Hungarian_NegQOverD_Smooth` | **99.84** | **97.14** | **94.41** | **96.12** | 44 | **99.32** | 1,679.0 |
+| **Tier A: Oracle GT** | `-q / (d + 1e-3)` | `DynGate_Hungarian_NegQOverD` | **99.84** | 97.13 | 94.39 | **96.12** | **42** | **99.32** | 1,656.5 |
+| **Tier A: Oracle GT** | `d / q` | `DynGate_Hungarian_DOverQ` | **99.84** | 97.13 | 94.39 | **96.12** | **42** | **99.32** | 1,627.9 |
+| **Tier A: Oracle GT** | `dist` *(pure distance)* | `DynGate_Hungarian_NoRL` | **99.84** | 97.13 | 94.39 | **96.12** | **42** | **99.32** | **3,631.1** |
+| **Tier A: Oracle GT** | `-q` | `DynGate_Hungarian_NegQ` | 99.75 | 96.73 | 93.61 | 95.69 | 77 | 98.62 | 1,353.4 |
+| **Tier B: D-FINE-M (`0.55`)** | **`dist * (1.5 - q_norm)`** | **`DroneRLTracker` (Ours)** | **82.87** | **68.12** | **72.52** | **86.91** | **96** | **99.43** | 1,735.1 |
+| **Tier B: D-FINE-M (`0.55`)** | `-q / (d + 1.0)` | `DynGate_Hungarian_NegQOverD_Smooth` | **82.87** | 68.09 | 72.47 | 86.88 | 97 | **99.43** | 1,724.0 |
+| **Tier B: D-FINE-M (`0.55`)** | `-q / (d + 1e-3)` | `DynGate_Hungarian_NegQOverD` | **82.87** | 68.09 | 72.47 | 86.88 | 97 | **99.43** | 1,572.9 |
+| **Tier B: D-FINE-M (`0.55`)** | `d / q` | `DynGate_Hungarian_DOverQ` | 82.86 | 68.09 | 72.48 | 86.88 | 99 | **99.43** | 1,652.4 |
+| **Tier B: D-FINE-M (`0.55`)** | `dist` *(pure distance)* | `DynGate_Hungarian_NoRL` | 82.86 | 68.09 | 72.48 | 86.88 | 99 | **99.43** | **3,710.0** |
+| **Tier B: D-FINE-M (`0.55`)** | `-q` | `DynGate_Hungarian_NegQ` | 82.66 | 67.90 | 72.06 | 86.43 | 167 | 98.75 | 1,660.0 |
+| **Tier B: YOLOX-M (`0.50`)** | **`dist * (1.5 - q_norm)`** | **`DroneRLTracker` (Ours)** | **81.94** | **66.85** | **72.52** | **87.18** | 54 | **99.42** | 1,766.8 |
+| **Tier B: YOLOX-M (`0.50`)** | `-q / (d + 1.0)` | `DynGate_Hungarian_NegQOverD_Smooth` | **81.94** | 66.80 | 72.41 | 87.04 | **53** | 99.39 | 1,772.9 |
+| **Tier B: YOLOX-M (`0.50`)** | `-q / (d + 1e-3)` | `DynGate_Hungarian_NegQOverD` | **81.94** | 66.80 | 72.41 | 87.04 | **53** | 99.39 | 1,778.7 |
+| **Tier B: YOLOX-M (`0.50`)** | `d / q` | `DynGate_Hungarian_DOverQ` | **81.94** | **66.85** | **72.52** | **87.18** | 54 | **99.42** | 1,800.2 |
+| **Tier B: YOLOX-M (`0.50`)** | `dist` *(pure distance)* | `DynGate_Hungarian_NoRL` | **81.94** | **66.85** | **72.52** | **87.18** | 54 | **99.42** | **3,296.1** |
+| **Tier B: YOLOX-M (`0.50`)** | `-q` | `DynGate_Hungarian_NegQ` | 81.86 | 66.76 | 72.34 | 86.83 | 81 | 98.99 | 1,839.3 |
+
+- **Mathematical Takeaways**:
+  1. **Empirical Q-Value Band**: Across `37k–39k` gated candidate evaluations per mode, `DroneQNetwork` outputs tightly clustered positive discounted returns (`Q ∈ [16.33, 19.62]`, mean `~19.07`, std `~0.56`).
+  2. **Why `dist * (1.5 - tanh((Q - 17.5)/2.5))` Is Best Overall**: Centering `Q` via `tanh` expands that narrow positive band into a bounded positive weight `(0.5, 2.5)` while keeping Euclidean distance strictly positive — placing **#1 in HOTA on all 3 splits** (`97.14%`, `68.12%`, `66.85%`) and #1 on every `D-FINE-M` metric (`96` IDSW).
+  3. **Why `d / q` Mirrors Pure `dist`**: Because `1/Q` varies by only ~`3%` across `Q ∈ [16.33, 19.62]`, dividing `d` by raw `q` leaves Hungarian assignments almost untouched (`YOLOX-M` matches pure `dist` on `36/36` sequences).
+  4. **Why `-q` and Negative Distance-Scaled Forms Degrade**: Minimizing `-q` alone discards sub-gate spatial precision, increasing IDSW by `+50%–75%` (`77` / `167` / `81`). Negative distance-scaled forms (`-d * q` and `-d / q`, evaluated and omitted from retained runners) prefer the farthest in-gate candidate under minimization (`2,853–6,007` IDSW). Conversely, `-q / (d + 1.0)` aligns both terms toward smaller cost and trails `DroneRLTracker` by only `0.00%–0.05%` HOTA.
+
+### 12.6 Literature Standing Across 14 UAVSwarm Papers (2022–2026)
+
+Full protocol provenance, per-paper summaries, and all 14 citations are maintained in [comparision.md](comparision.md):
+
+| Protocol Tier | Paper / System | MOTA (%) ↑ | IDF1 (%) ↑ | HOTA (%) ↑ | IDSW ↓ | Key Context / Comparison |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **Tier A (Oracle GT)** | **`DroneRLTracker` (Ours)** | **99.84** | **96.12** | **97.14** | 44 | **`UAVSwarm-28`**: **`99.08%` MOTA / `83.73%` IDF1 / `8` IDSW** (`1,599.5 FPS` CPU) |
+| **Tier A (Oracle GT)** | `GNMOT` *(Wang et al., 2022)* | — | — | — | — | `25/36` perfect vs our `23/36`; `UAVSwarm-28`: `98.4%` MOTA / `76.9%` IDF1 / `14` IDSW |
+| **Tier B (UAVSwarm Test)** | `RoeNet` *(Jul 2026)* `[Paywalled ESWA]` | **85.99** | 84.03 | 72.25 | — | Physics-inspired JDT (`96.82%` AP50); both our Tier-B trackers lead in `IDF1` |
+| **Tier B (UAVSwarm Test)** | `EECTracker` *(Sep 2026, `YOLOX-X 1088`)* | 84.71 | **90.19** | 69.16 | **54** | `22.9 FPS` (RTX 3090); beats `EECTracker-Light` (`78.73% / 65.60%`) |
+| **Tier B (UAVSwarm Test)** | **`D-FINE-M (640) + DroneRLTracker` (Ours)** | **82.87** | 86.91 | **68.12** | 96 | `28.8 FPS` L4 det + `1,735 FPS` CPU trk; beats `SCT-MOT` & `10` others on MOTA |
+| **Tier B (UAVSwarm Test)** | **`YOLOX-M (640) + DroneRLTracker` (Ours)** | 81.94 | **87.18** | 66.85 | **54** | **`57.0 FPS` L4 det** + `1,767 FPS` CPU trk; ties `EECTracker`'s `54` IDSW |
+| **Tier B (UAVSwarm Test)** | `SCT-MOT` *(Apr 2026, `YOLOX-X 1088`)* | 81.90 | 88.45 | 68.56 | 56 | `22.3 FPS` (RTX 3090); `+0.44%` HOTA edge via 8-frame `SMTP` |
+| **Tier B (UAVSwarm Test)** | `KRAfT` *(ICPR 2026)* `[Paywalled]` | — | — | **80.37** | — | Kalman Residual Diffusion (`70.59%` cross-weather `W2C`) |
+| **Tier B (UAVSwarm Test)** | `HOMATracker` / `Hybrid-SORT` / `OC-SORT` / `ByteTrack` | 79.2 / 77.4 / 75.7 / 65.0 | 87.1 / 80.1 / 81.8 / 76.5 | 67.0 / 62.8 / 64.7 / 60.6 | 58–709 | Our `640×640` Tier-B trackers outperform all on `MOTA` & `IDF1` |
+
+### 12.7 Local 4-Sequence Runtime Telemetry (`results/`)
+
+#### A. Headline Local Telemetry (`README.md`, `run2.py`)
 
 | Sequence | Resolution | Frames | Actual Swarm Size | Mean Active Swarm (Peak) | Persistent Tracks | Coordinates Traced |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -565,25 +647,19 @@ Evaluated against `results/uavswarm_02_gt.txt` (2,984 annotations, 25 FPS):
 | **UAVSwarm-08** | $446 \times 270$ | $115$ | $12$ drones | $9.8$ / frame (Peak: $12$) | $17$ | **$1{,}148$ points** |
 | **UAVSwarm-14** | $812 \times 428$ | $115$ | $20$ drones | $16.6$ / frame (Peak: $20$) | $22$ | **$1{,}936$ points** |
 
-#### B. Per-Pipeline Measurements Logged in `DEVLOG.md`
+#### B. Verified Per-Pipeline & Smoke-Test Measurements (`DEVLOG.md`)
 
 | Pipeline / Mode | Sequence | FPS / Latency | Persistent Tracks | Points Traced | Mean Swarm (Peak) |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **Phase 7 `run.py` (Precomputed D-FINE dets)** | `UAVSwarm-02` | $25.6\text{ FPS}$ | $71$ | $3{,}206$ | $20.1$ ($27$) |
-| **Phase 7 `run.py` (Precomputed D-FINE dets)** | `UAVSwarm-04` | $33.1\text{ FPS}$ | $20$ | $3{,}034$ | $18.7$ ($19$) |
-| **Phase 7 `run.py` (Precomputed D-FINE dets)** | `UAVSwarm-08` | $47.2\text{ FPS}$ | $11$ | $1{,}090$ | $9.4$ ($10$) |
-| **Phase 7 `run.py` (Precomputed D-FINE dets)** | `UAVSwarm-14` | $28.1\text{ FPS}$ | $20$ | $1{,}886$ | $16.2$ ($20$) |
-| **Phase 7 Totals (4 sequences)** | $547$ frames | **$33.5\text{ FPS}$ avg** | — | **$9{,}216$ total** | — |
-| **Live Runtime `run.py` (Apple Silicon MPS)** | `UAVSwarm-08` | $1.6\text{ FPS}$ ($71.33\text{ s}$, $\sim 150\text{ ms/f}$) | $14$ | $1{,}109$ | $9.5$ ($11$) |
-| **Pipeline 2 `run2.py` (Shuffled GT Oracle)** | `UAVSwarm-02` | $36.1\text{ FPS}$ | $20$ | $2{,}983$ | — |
-| **Pipeline 2 `run2.py` (Shuffled GT Oracle)** | `UAVSwarm-04` | $37.1\text{ FPS}$ | $20$ | $3{,}034$ | — |
-| **Pipeline 3 `run3.py --mode runtime` (YOLOX)** | `UAVSwarm-04` | Detected $14\text{--}22$ drones $>0.75$ conf | — | $3{,}062$ | $18.7$ ($22$) |
-| **Pipeline 3 `run3.py --mode runtime` (YOLOX)** | `UAVSwarm-08` | Live ONNX Runtime | — | $1{,}148$ | $9.8$ ($12$) |
-| **Pipeline 3 `run3.py --mode runtime` (YOLOX)** | `UAVSwarm-14` | Live ONNX Runtime | — | $1{,}936$ | $16.6$ ($20$) |
+| **Post-L4 Headless `run.py` (`D-FINE-M`, `conf=0.55`, MPS)** | `UAVSwarm-08` | $2.0\text{--}3.0\text{ FPS}$ (MPS) | $12$ | $996$ | — |
+| **Post-L4 Headless `run3.py --mode runtime` (`YOLOX-M`, `conf=0.50`, CPU ONNX)** | `UAVSwarm-08` | $1.4\text{--}1.6\text{ FPS}$ (CPU) | $13$ | $1{,}035$ | — |
+| **Phase 7 `run.py` (Precomputed D-FINE dets)** | `UAVSwarm-02 / 04 / 08 / 14` | **$33.5\text{ FPS}$ avg** | $71 / 20 / 11 / 20$ | **$9{,}216$ total** | — |
+| **Pipeline 2 `run2.py` (Shuffled GT Oracle)** | `UAVSwarm-02` / `UAVSwarm-04` | $36.1$ / $37.1\text{ FPS}$ | $20$ / $20$ | $2{,}983$ / $3{,}034$ | — |
+| **Historical Phase 9 `run3.py` (`YOLOX-S`, `04/08/14`)** | `UAVSwarm-04 / 08 / 14` | Live ONNX Runtime | — | $3{,}062 / 1{,}148 / 1{,}936$ | $18.7(22) / 9.8(12) / 16.6(20)$ |
 
 ---
 
-## 13. Complete Phase-by-Phase Engineering & Decision Log (Phases 0–10)
+## 13. Complete Phase-by-Phase Engineering & Decision Log (Phases 0–13)
 
 Every milestone from `PLAN.md` and `DEVLOG.md` is captured below in chronological order:
 
@@ -601,7 +677,7 @@ Every milestone from `PLAN.md` and `DEVLOG.md` is captured below in chronologica
 4. **Phase 3 — Shrimp $\to$ Drone RL Adaptation**:
    - Built `shrimp_drone/drone_env.py` (`DroneTrackingEnv` with `get_dynamic_gate()` + 12 real swarm hard negatives + 4 random clutter), `shrimp_drone/train_drone_agent.py` (`DroneQNetwork` 5→128→64→1, 50k buffer, 600 epochs, `+0.5` near-miss reward), and `shrimp_drone/run_drone_tracker.py` (150-frame history rendering & CSV/JSON export).
 5. **Phase 4 — Cloud Training & Backups**:
-   - Downloaded `dfine_m_coco.pth` (`79.1 MB`) for transfer learning and trained D-FINE on Tesla T4 (`AP50 = 92.6%`, `AR50 = 96.0%`, `mAP = 48.2%`).
+   - Downloaded `dfine_m_coco.pth` (`79.1 MB`) for transfer learning and trained an initial D-FINE prototype on Tesla T4 (`val_half` `AP50 = 92.6%`, `AR50 = 96.0%`, `mAP = 48.2%`).
    - Trained RL policy for 600 epochs $\to$ `checkpoints/drone_tracker_policy_best.pth` (`39.8 KB`).
    - Shifted operational objective from Shrimp line-crossing counting (`VectorHysteresisCounter`) to **continuous spatial trajectory tracing**.
 6. **Phase 5 — Image-to-Video Compilation & Initial Tracking**:
@@ -615,12 +691,22 @@ Every milestone from `PLAN.md` and `DEVLOG.md` is captured below in chronologica
    - Standardized clean architecture (removed synthetic placeholders like `Drone/annotator.py`), preserved research assets for paper publication, and verified live D-FINE runtime inference on Apple Silicon MPS (`run.py`, `UAVSwarm-08`, `1.6 FPS`, `14` tracks).
 9. **Phase 8 — Ground Truth Oracle Pipeline (`run2.py`) (2026-11-03)**:
    - Implemented `run2.py` feeding isolated GT boxes (stripped of IDs for association and `random.shuffle`-d per frame) to prove the upper-bound tracker performance into `result_without_custom_object_detection/`.
-10. **Phase 9 — YOLOX-S Cloud Fine-Tuning & Dual-Mode `run3.py` (2026-11-03)**:
-    - Provisioned Colab `yolox-trainer` (Tesla T4, 15.6 GB VRAM), cloned full `3.7 GB` `UAVSwarm-dataset` (`12,963` images across 72 sequences), fine-tuned single-class `YOLOX-S` on `train_half.json` (`3,450` train imgs / `25,396` anns) and `val_half.json` (`3,394` val imgs / `24,265` anns) for 12 epochs (`batch=16`, `FP16`, Cosine LR `0.01/64` per img, `min_lr_ratio=0.05`, `warmup_epochs=1`, `weight_decay=5e-4`, `momentum=0.9`, `degrees=10.0`, `translate=0.1`, `scale=(0.5, 1.5)`, `mosaic_prob=1.0`, `mixup_prob=0.5`, `hsv_prob=1.0`).
-    - Achieved **`53.44%` mAP**, **`94.0%` $\text{AP}_{50}$**, **`52.9%` $\text{AP}_{75}$**, **`52.2%` $\text{AP}_{\text{small}}$**, **`12.30 ms/frame`** ($81.3\text{ FPS}$). Exported `checkpoints/yolox_drone_finetuned.onnx` (`35.85 MB`) and built `run3.py` (`--mode runtime` & `--mode benchmark`) outputting to `result_with_yolox/`.
+10. **Phase 9 — Initial `YOLOX-S` Prototype & Dual-Mode `run3.py` (2026-11-03)**:
+    - Provisioned Colab `yolox-trainer` (Tesla T4, 15.6 GB VRAM), cloned full `3.7 GB` `UAVSwarm-dataset` (`12,963` images across 72 sequences), fine-tuned an initial single-class `YOLOX-S` (`8.94M` params) on `train_half.json` (`3,450` imgs) / `val_half.json` (`3,394` imgs) for 12 epochs (`FP16`, `batch=16`), reaching `53.44%` mAP / `94.0%` AP50 on `val_half` (`81.3 FPS` T4, `35.85 MB` ONNX), and built `run3.py` (`--mode runtime` & `--mode benchmark`) outputting to `result_with_yolox/`.
 11. **Phase 10 — Multi-Video Validation, Workspace Hygiene & Publication Docs (2026-11-03)**:
     - Validated `run3.py --mode runtime` across `04`, `08`, and `14`.
     - Purged temporary scratch scripts from `scripts/`, retained only clean benchmark inputs in `results/`, documented YOLOX training in `notebooks/04_yolox_finetune.py`, updated `README.md` / `PLAN.md` / `DEVLOG.md`, and committed weights via Git LFS (`drone-swarm-tracking`).
+12. **Phase 11 — Full 36-Sequence Tier-A Benchmark Suite & 14-Paper Literature Analysis (2026-11-20)**:
+    - Implemented unit-tested `MOTA`, `IDF1`, and 19-threshold `HOTA` evaluators in `evaluations/mot_metrics.py` and full 36-sequence ablation runner `evaluations/evaluate_tracking.py` (`5,754` frames, `325` tracks, `37,947` boxes), achieving **`99.84%` MOTA / `97.14%` HOTA / `96.12%` IDF1 / `44` IDSW / `1,599.5 FPS`**.
+    - Authored `evaluations/results.md` and `comparision.md` across 14 published UAVSwarm studies (2022–2026), directly contrasting Tier-A tracking against `GNMOT` (`UAVSwarm-28`: `99.08%` vs `98.4%` MOTA).
+13. **Phase 12 — Zero-Leakage NVIDIA L4 Retraining (`D-FINE-M` & `YOLOX-M`) & Tier-B End-to-End Evaluation (2026-11-20)**:
+    - Constructed chronological `train_85` (`5,805` imgs) / `val_15` (`1,039` imgs) splits and provisioned two parallel **NVIDIA L4 (24 GB)** Colab VMs (`dfine-gpu`, `yolox-gpu`; A100 returned HTTP 503).
+    - Trained `D-FINE HGNetv2-M` (`15` ep, `79.36 min`, `best_stg2.pth` ep 14 -> **`78.57 MB` EMA**, MD5 `cba23409f653b79e347db3c9430a338b`) and upgraded `YOLOX` to **`YOLOX-M`** (`20` ep, `47.60 min` -> **`101.20 MB` ONNX**, MD5 `c6a9097d1f490a912c8fa62c774589fe`), locking `val_15` thresholds (`0.55` / `0.50`).
+    - Evaluated once on all `5,754` unseen `test_official` frames (Tier D: `92.86%` / `90.28%` AP50; Tier B via `evaluate_end_to_end.py`: `82.87% MOTA / 68.12% HOTA / 86.91% IDF1 / 96 IDSW` and `81.94% / 66.85% / 87.18% / 54 IDSW`).
+    - Updated `run.py` (`SCORE_THRES = 0.55`), `run3.py` (shape auto-detection + `conf_thresh = 0.50`), and `dfine_core` (lazy `SummaryWriter`), verified headless smoke tests on `UAVSwarm-08`, and terminated both Colab VMs cleanly (`0.00/hr` CCU).
+14. **Phase 13 — Hungarian Cost-Matrix Strategy Ablations & `evaluations/` Organization (2026-11-20)**:
+    - Implemented standalone strategy ablations in `evaluations/testing_different_stratergies/` (`evaluate_neg_q.py`, `evaluate_neg_q_over_d.py`, `evaluate_d_over_q.py`), confirming `dist * (1.5 - tanh((Q - 17.5)/2.5))` achieves #1 HOTA across Tier A and both Tier B splits.
+    - Organized `evaluations/` cleanly into `data/` (`uavswarm_test_gt/`, `detections_dfine/`, `detections_yolox/`), `results/` (`tier_a/`, `tier_b/`, `predictions/`, `plots/`), and `testing_different_stratergies/`, updating all runner scripts and documentation.
 
 ---
 
@@ -630,14 +716,16 @@ A quick reference of every nontrivial bug encountered in `DEVLOG.md` and how eac
 
 | # | Symptom / Failure | Root Cause | Exact Fix Implemented |
 | :---: | :--- | :--- | :--- |
-| **1** | D-FINE cross-entropy target out-of-bounds crash | Raw UAVSwarm JSON used `category_id: 1` (`'pedestrian'`), while `num_classes: 1` + `remap_mscoco_category: False` expects `0`-indexed targets `[0]`. | Sanitized `train.json`, `val.json`, `full_train.json` to `category_id: 0`, name `'drone'`. |
-| **2** | D-FINE YAML dataloader assertion error | Base `include/dataloader.yml` sets `total_batch_size`; specifying `batch_size` simultaneously triggers an exclusivity assertion. | Overrode `total_batch_size: 4` (instead of `batch_size`) in D-FINE config. |
+| **1** | D-FINE cross-entropy target out-of-bounds crash | Raw UAVSwarm JSON used `category_id: 1` (`'pedestrian'`), while `num_classes: 1` + `remap_mscoco_category: False` expects `0`-indexed targets `[0]`. | Sanitized `train.json`, `val.json`, `full_train.json` (and `train_85` / `val_15`) to `category_id: 0`, name `'drone'`. |
+| **2** | D-FINE YAML dataloader assertion error | Base `include/dataloader.yml` sets `total_batch_size`; specifying `batch_size` simultaneously triggers an exclusivity assertion. | Overrode `total_batch_size` (instead of `batch_size`) in D-FINE config (`4` on T4; `24` on L4). |
 | **3** | D-FINE runtime tensor shape error on arbitrary video sizes & offline stall | `HybridEncoder` uses a fixed `pos_embed` of `400` tokens ($20\times 20$ grid at stride 32 $\implies 640\times 640$). Default `pretrained: True` also tries downloading backbone weights. | Forced `T.Resize((640, 640))` in `DFineDetector` and set `pretrained: False` in `dfine_hgnetv2_m_uavswarm.yml`. |
-| **4** | `colab download` socket drop on `313 MB` `best_stg1.pth` | Jupyter server contents API encodes files as base64 in a single JSON HTTP payload (`GET /api/contents/...`), stalling/closing Tornado buffers above ~`50 MB`. | Extracted EMA-only weights (`74.99 MB` `dfine_drone_weights.pth`), ran `split -b 15M` into `chunk_aa..ae`, downloaded chunks, reassembled locally via `cat`, and automated mirroring in `scripts/sync_backups.py`. |
+| **4** | `colab download` socket drop on `313 MB` `best_stg1.pth` | Jupyter server contents API encodes files as base64 in a single JSON HTTP payload (`GET /api/contents/...`), stalling/closing Tornado buffers above ~`50 MB`. | Extracted EMA-only weights (`dfine_drone_weights.pth`), ran `split -b 15M` into chunks, downloaded chunks, reassembled locally via `cat`, and mirrored via `scripts/sync_backups.py`. |
 | **5** | Colab long-running jobs timing out | `google-colab-cli` (`colab exec`) defaults to a `30.0 s` client timeout, and Colab VMs disconnect on idle. | Passed `--timeout 3600`, launched detached `nohup` jobs writing to `/content/*.log`, and mirrored continuously via `sync_backups.py --loop`. |
 | **6** | Megvii YOLOX install failures on Colab Python 3.13 | `setup.py` asserted `torch` wasn't found inside isolated PEP-517 build env, and `onnx-simplifier` failed metadata build on Python 3.13. | Stripped `onnx-simplifier` from `requirements.txt` and installed with `pip install --no-build-isolation -e .`. |
-| **7** | PyTorch Dynamo ONNX export broken for YOLOX | Modern PyTorch Dynamo-based ONNX export produced incomplete external references on YOLOX's head. | Used TorchScript tracing (`torch.onnx.export(..., dynamo=False, opset_version=14)`) + `weights_only=False` checkpoint load, producing self-contained `yolox_drone_finetuned.onnx` (`35.85 MB`, shape `[1, 8400, 6]`). |
+| **7** | PyTorch Dynamo ONNX export broken for YOLOX | Modern PyTorch Dynamo-based ONNX export produced incomplete external references on YOLOX's head. | Used TorchScript tracing (`torch.onnx.export(..., dynamo=False, opset_version=14)`) + `weights_only=False` checkpoint load, producing self-contained `yolox_drone_finetuned.onnx` (`101.20 MB` for `YOLOX-M`, shape `[1, 8400, 6]`; earlier `35.85 MB` for `YOLOX-S`). |
 | **8** | `DroneAgent.__init__()` unexpected keyword `epochs` | Training script passed `epochs` to `DroneAgent` constructor instead of only the training loop. | Removed `epochs` argument from `DroneAgent.__init__` in `shrimp_drone/train_drone_agent.py`. |
+| **9** | `run.py` `AttributeError: np.complex_` on import under NumPy 2.x | `dfine_core/src/core/_config.py` and `dfine_core/src/solver/det_engine.py` eagerly imported `torch.utils.tensorboard.SummaryWriter`, triggering an incompatible local TensorFlow installation. | Replaced eager imports with `TYPE_CHECKING` guard and lazy `SummaryWriter` import inside `BaseConfig.writer`; headless `run.py` MPS inference verified clean. |
+| **10** | Colab A100 provisioning returned HTTP 503 | Transient A100 GPU unavailability during final detector retraining. | Provisioned two parallel **NVIDIA L4 (24 GB)** VMs (`dfine-gpu` & `yolox-gpu`), training both models concurrently (`79.36 min` & `47.60 min`) and terminating cleanly afterwards. |
 
 ---
 
@@ -660,7 +748,7 @@ python run.py --video results/uavswarm_test_04_raw.mp4
 python run.py --video results/uavswarm_test_08_raw.mp4
 python run.py --video results/uavswarm_test_14_raw.mp4
 python run.py --video results/uavswarm_test_04_raw.mp4 --headless
-# Optional: --weights, --policy, --conf (default 0.35), --benchmark-gt
+# Optional: --weights, --policy, --conf (default 0.55), --benchmark-gt
 
 # ── Pipeline 2: Shuffled Ground-Truth Oracle + RL Tracker (result_without_custom_object_detection/) ──
 python run2.py
@@ -670,7 +758,7 @@ python run2.py --video results/uavswarm_test_14_raw.mp4
 python run2.py --video results/uavswarm_test_04_raw.mp4 --headless
 # Optional: --gt path/to/gt.txt, --policy
 
-# ── Pipeline 3A: Live YOLOX-S ONNX + RL Tracker (result_with_yolox/) ──
+# ── Pipeline 3A: Live YOLOX-M ONNX + RL Tracker (result_with_yolox/) ──
 python run3.py --mode runtime
 python run3.py --video results/uavswarm_test_04_raw.mp4 --mode runtime
 python run3.py --video results/uavswarm_test_08_raw.mp4 --mode runtime
@@ -680,7 +768,15 @@ python run3.py --video results/uavswarm_test_04_raw.mp4 --mode runtime --headles
 # ── Pipeline 3B: Official UAVSwarm Benchmark YOLOX Detections + RL Tracker ──
 python run3.py --mode benchmark
 python run3.py --video results/uavswarm_test_04_raw.mp4 --mode benchmark
-# Optional: --weights, --det path/to/det.txt, --policy, --conf (default 0.05), --output, --csv, --json
+# Optional: --weights, --det path/to/det.txt, --policy, --conf (default 0.50), --output, --csv, --json
+
+# ── 36-Sequence Benchmark Suite & Cost-Strategy Ablations (evaluations/) ──
+python3 evaluations/mot_metrics.py
+python3 evaluations/evaluate_tracking.py
+python3 evaluations/evaluate_end_to_end.py
+python3 evaluations/testing_different_stratergies/evaluate_neg_q.py
+python3 evaluations/testing_different_stratergies/evaluate_neg_q_over_d.py
+python3 evaluations/testing_different_stratergies/evaluate_d_over_q.py
 
 # ── Re-train the RL Association Agent from cleaned trajectory CSV ──
 python shrimp_drone/train_drone_agent.py \
@@ -731,24 +827,26 @@ track_id,frame,cx,cy,vx,vy,x1,y1,x2,y2
 ```
 RM_Shrimp_extension/
 │
-├── run.py                           # Pipeline 1: Live D-FINE detection + RL tracking
+├── run.py                           # Pipeline 1: Live D-FINE-M detection + RL tracking
 ├── run2.py                          # Pipeline 2: Ground truth detection (shuffled) + RL tracking
-├── run3.py                          # Pipeline 3: Live YOLOX ONNX / benchmark det.txt + RL tracking
+├── run3.py                          # Pipeline 3: Live YOLOX-M ONNX / benchmark det.txt + RL tracking
 ├── study.md                         # This complete first-principles guide & reference
 ├── PLAN.md                          # Phase 0-10 roadmap & architecture comparison
 ├── DEVLOG.md                        # Chronological engineering decision & debugging log
 ├── README.md                        # Project overview, benchmark tables, and CLI quickstart
+├── comparision.md                   # 14-paper (2022–2026) UAVSwarm literature benchmark
+├── run.txt                          # Verification command & output log
 │
 ├── checkpoints/                     # Trained detector & RL policy weights (Git LFS)
-│   ├── dfine_drone_weights.pth      # Fine-tuned D-FINE EMA detector weights (~75 MB)
-│   ├── yolox_drone_finetuned.onnx   # Fine-tuned YOLOX-S single-class ONNX (35.85 MB, 8.94M params)
-│   ├── yolox_s.onnx                 # Pretrained COCO YOLOX-S baseline (35.86 MB)
+│   ├── dfine_drone_weights.pth      # Fine-tuned D-FINE-M clean EMA weights (78.57 MB)
+│   ├── yolox_drone_finetuned.onnx   # Fine-tuned YOLOX-M single-class ONNX (101.20 MB, 25.28M params)
+│   ├── yolox_s.onnx                 # Pretrained COCO YOLOX-S fallback baseline (35.86 MB)
 │   ├── drone_tracker_policy_best.pth# Trained 5→128→64→1 RL association policy (39.8 KB)
 │   └── test_drone_policy_best.pth   # Backup RL policy checkpoint (39.8 KB)
 │
-├── result_with_our_dfine/           # Outputs from Pipeline 1 (D-FINE + RL)
+├── result_with_our_dfine/           # Outputs from Pipeline 1 (D-FINE-M + RL)
 ├── result_without_custom_object_detection/ # Outputs from Pipeline 2 (Shuffled GT + RL)
-├── result_with_yolox/               # Outputs from Pipeline 3 (YOLOX + RL)
+├── result_with_yolox/               # Outputs from Pipeline 3 (YOLOX-M + RL)
 │
 ├── results/                         # Clean raw benchmark videos & official annotations
 │   ├── uavswarm_test_raw.mp4        # UAVSwarm-02 raw video (156 frames, 812x428)
@@ -757,6 +855,19 @@ RM_Shrimp_extension/
 │   ├── uavswarm_test_14_raw.mp4     # UAVSwarm-14 raw video (115 frames, 812x428)
 │   ├── uavswarm_*_gt.txt            # Official MOT16 ground-truth files (02, 04, 08, 14)
 │   └── uavswarm_*_yolox_det.txt     # Official benchmark YOLOX detections (02, 04, 08, 14)
+│
+├── evaluations/                     # Organized 36-sequence benchmarks & strategy ablations
+│   ├── mot_metrics.py               # Unit-tested MOTA, IDF1, and 19-threshold HOTA evaluators
+│   ├── evaluate_tracking.py         # Tier-A 36-sequence oracle-box benchmark & ablations
+│   ├── evaluate_end_to_end.py       # Tier-B 36-sequence D-FINE-M / YOLOX-M end-to-end benchmark
+│   ├── results.md                   # Complete Tier-A/D/B & cost-matrix benchmark report
+│   ├── data/                        # uavswarm_test_gt/, detections_dfine/, detections_yolox/
+│   ├── results/                     # tier_a/, tier_b/, predictions/, plots/
+│   └── testing_different_stratergies/
+│       ├── evaluate_neg_q.py        # Cost strategy ablation: -q
+│       ├── evaluate_neg_q_over_d.py # Cost strategy ablation: -q/(d+1e-3) & -q/(d+1.0)
+│       ├── evaluate_d_over_q.py     # Cost strategy ablation: d/q
+│       └── results/                 # Strategy CSV & JSON comparisons (12 result files)
 │
 ├── shrimp_drone/                    # Core RL environment, DQN trainer & dataset utilities
 │   ├── drone_env.py                 # DroneTrackingEnv (dynamic gating + swarm clutter hard negatives)
@@ -779,9 +890,12 @@ RM_Shrimp_extension/
 │   ├── 01_dataset_preparation.py    # UAVSwarm MOT → COCO + trajectory CSV
 │   ├── 02_dfine_finetune.py         # D-FINE HGNetv2-M fine-tuning & ONNX export
 │   ├── 03_rl_agent_training.py      # 600-epoch RL Q-Network agent training
-│   └── 04_yolox_finetune.py         # YOLOX-S fine-tuning & ONNX export
+│   └── 04_yolox_finetune.py         # YOLOX fine-tuning & ONNX export
 │
-├── logs/                            # Training terminal logs & summaries
+├── logs/                            # Training terminal logs & summaries (L4 & T4/RL runs)
+│   ├── dfine_l4_train.log           # NVIDIA L4 D-FINE HGNetv2-M training log (15 ep)
+│   ├── yolox_l4_train.log           # NVIDIA L4 YOLOX-M training log (20 ep)
+│   └── dfine_train.log / rl_train.log
 └── scripts/
     └── sync_backups.py              # One-shot / --loop Colab backup mirror script
 ```

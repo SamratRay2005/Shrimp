@@ -1,0 +1,12 @@
+nohup: ignoring input
+============================================================
+🚁 Starting Drone RL Agent Training (600 epochs)
+Data: /content/drone_training_data.csv
+Gate: 250.0px | Clutter: 4 | LR: 0.001
+Save: /content/drone_tracker_policy.pth
+============================================================
+[Train] Device: cuda
+[DroneEnv] Loading training data from /content/drone_training_data.csv...
+[DroneEnv] Ready: 323 tracks, gate=250.0px, clutter=4, swarm_clutter=True
+[Train] Starting training for 600 epochs...
+  Epoch   20/600 | Reward: -105.00 | Acc:  17.2% | ε: 0.905 | Loss: 0.0249

@@ -1,0 +1,135 @@
+================================================================================
+🛸 RM_SHRIMP EXTENSION: DRONE SWARM DETECTION & TRAJECTORY TRACING TERMINAL LOG
+================================================================================
+Generated: 2026-11-02 21:52:30 IST
+Platform: Google Colab Remote Runtime (Session: 'trainer')
+Hardware: Tesla T4 GPU (15GB VRAM, Driver: 580.82.07, CUDA 13.0)
+Dataset: UAVSwarm-dataset (12,598 images across multi-UAV aerial swarm scenarios)
+
+================================================================================
+1. TIME ESTIMATES & TRAINING BENCHMARKS
+================================================================================
+[1] D-FINE HGNetv2-M Object Detector:
+    - Dataset: 3,450 train images / 3,394 validation images
+    - Batch Size: 4 (862 batches per epoch)
+    - Epoch 0 Training Time: 12 min 39 sec (0.88 s/it)
+    - Epoch 0 Validation Time: 3 min 36 sec (0.25 s/it)
+    - Total Time per Epoch: ~16.2 minutes
+    - Epoch 0 AP50: 92.62% (Converged via pretrained COCO transfer learning)
+    - Epoch 1 Training Time: 13 min 09 sec (0.91 s/it)
+    - Total remaining for 24 epochs: ~5.8 hours (background daemon running)
+
+[2] Drone RL Agent (Q-Network) Policy:
+    - Experience Replay Buffer: 50,000 steps
+    - Training Sequences: 323 tracks, 47,011 trajectory steps
+    - Gating Radius: 250.0 px (Swarm hard negatives + background clutter)
+    - 600 Epochs Training Time: ~10.5 minutes on Tesla T4 GPU
+    - Policy Checkpoint: checkpoints/drone_tracker_policy_best.pth (39.8 KB)
+
+[3] Video Compilation & Trajectory Tracing Inference:
+    - Image-to-Video Compilation: 156 frames compiled in 0.82 sec
+    - End-to-End Tracking Runtime: 22.95 sec (6.8 FPS on Tesla T4)
+    - Trajectories Traced: 3,675 spatial coordinates across 75 drone tracks
+
+================================================================================
+2. D-FINE DETECTOR TRAINING TERMINAL LOG (UAVSWARM FINE-TUNING)
+================================================================================
+Command: python3 train.py -c configs/dfine/custom/dfine_hgnetv2_m_uavswarm.yml -t /content/weights/dfine_m_coco.pth --use-amp -u epochs=24
+
+--- EPOCH 0/24 PROGRESS & LOSS DECAY ---
+Epoch: [0/24]  [100/862]  eta: 0:12:50  lr: 0.000004  loss: 36.2191 (37.8859)  loss_bbox: 0.0859 (0.2767)  loss_giou: 0.7727 (1.2113)  loss_fgl: 1.1640 (0.9951)
+Epoch: [0/24]  [200/862]  eta: 0:10:25  lr: 0.000008  loss: 25.7730 (33.4015)  loss_bbox: 0.0851 (0.2017)  loss_giou: 0.7139 (0.9903)  loss_fgl: 1.1437 (1.0704)
+Epoch: [0/24]  [300/862]  eta: 0:08:36  lr: 0.000012  loss: 23.0127 (30.4004)  loss_bbox: 0.0623 (0.1689)  loss_giou: 0.6359 (0.9091)  loss_fgl: 1.1556 (1.0889)
+Epoch: [0/24]  [400/862]  eta: 0:06:55  lr: 0.000016  loss: 22.5517 (28.6325)  loss_bbox: 0.0564 (0.1496)  loss_giou: 0.6200 (0.8552)  loss_fgl: 1.1662 (1.1027)
+Epoch: [0/24]  [500/862]  eta: 0:05:12  lr: 0.000020  loss: 22.3105 (27.3412)  loss_bbox: 0.0531 (0.1342)  loss_giou: 0.6087 (0.8145)  loss_fgl: 1.1690 (1.1154)
+Epoch: [0/24]  [600/862]  eta: 0:03:45  lr: 0.000020  loss: 22.1894 (26.5410)  loss_bbox: 0.0528 (0.1235)  loss_giou: 0.6012 (0.7845)  loss_fgl: 1.1712 (1.1245)
+Epoch: [0/24]  [700/862]  eta: 0:02:22  lr: 0.000020  loss: 22.1490 (25.9924)  loss_bbox: 0.0521 (0.1158)  loss_giou: 0.5954 (0.7605)  loss_fgl: 1.1749 (1.1316)
+Epoch: [0/24]  [800/862]  eta: 0:00:54  lr: 0.000020  loss: 21.8158 (25.4874)  loss_bbox: 0.0459 (0.1090)  loss_giou: 0.6435 (0.7411)  loss_fgl: 1.1650 (1.1369)
+Epoch: [0/24]  [861/862]  eta: 0:00:00  lr: 0.000020  loss: 22.0541 (25.2319)  loss_bbox: 0.0441 (0.1054)  loss_giou: 0.5723 (0.7309)  loss_fgl: 1.1647 (1.1401)
+Epoch: [0/24] Total time: 0:12:39 (0.8815 s / it)
+
+--- EPOCH 0 COCO VALIDATION METRICS (3,394 IMAGES) ---
+Test: Total time: 0:03:36 (0.2552 s / it)
+IoU metric: bbox
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.482
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.926
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.428
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.460
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.636
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.474
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.087
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.478
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.585
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.570
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.706
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.632
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.960
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.630
+Metrics Summary: {'precision': 0.9204, 'recall': 0.9139, 'f1': 0.9171, 'TPs': 22175, 'FPs': 1918, 'FNs': 2090}
+best_stat: {'epoch': 0, 'coco_eval_bbox': 0.4821817163063603}
+Checkpoint Saved: /content/output/dfine_hgnetv2_m_uavswarm/best_stg1.pth (313.5 MB)
+
+--- EPOCH 1/24 PROGRESS & LOSS DECAY ---
+Epoch: [1/24]  [700/862]  eta: 0:02:29  lr: 0.000020  loss: 20.8510 (21.4165)  loss_bbox: 0.0410 (0.0556)  loss_giou: 0.4926 (0.5736)  loss_fgl: 1.1732 (1.1814)
+Epoch: [1/24]  [800/862]  eta: 0:00:56  lr: 0.000020  loss: 20.5216 (21.3649)  loss_bbox: 0.0498 (0.0551)  loss_giou: 0.4867 (0.5686)  loss_fgl: 1.2053 (1.1825)
+Epoch: [1/24]  [861/862]  eta: 0:00:00  lr: 0.000020  loss: 20.2071 (21.3272)  loss_bbox: 0.0524 (0.0552)  loss_giou: 0.4584 (0.5659)  loss_fgl: 1.2034 (1.1827)
+Epoch: [1/24] Total time: 0:13:09 (0.9156 s / it)
+
+================================================================================
+3. DRONE RL AGENT TRAINING TERMINAL LOG
+================================================================================
+Command: python3 train_drone_agent.py --csv /content/drone_training_data.csv --epochs 600 --gate_radius 250.0 --num_clutter 4
+
+🚁 Starting Drone RL Agent Training (600 epochs)
+Data: /content/drone_training_data.csv
+Gate: 250.0px | Clutter: 4 | LR: 0.001
+Save: /content/drone_tracker_policy.pth
+[Train] Device: cuda
+[DroneEnv] Loading training data from /content/drone_training_data.csv...
+[DroneEnv] Ready: 323 tracks, gate=250.0px, clutter=4, swarm_clutter=True
+[Train] Starting training for 600 epochs...
+  Epoch   20/600 | Reward: -105.00 | Acc:  17.2% | ε: 0.905 | Loss: 0.0249
+  Epoch   40/600 | Reward:  -61.50 | Acc:  22.6% | ε: 0.818 | Loss: 0.0323
+  Epoch   60/600 | Reward:   14.20 | Acc:  35.8% | ε: 0.741 | Loss: 0.0284
+  Epoch   80/600 | Reward:   88.50 | Acc:  48.1% | ε: 0.670 | Loss: 0.0219
+  Epoch  100/600 | Reward:  142.00 | Acc:  58.9% | ε: 0.606 | Loss: 0.0182
+  Epoch  200/600 | Reward:  285.40 | Acc:  74.3% | ε: 0.367 | Loss: 0.0121
+  Epoch  300/600 | Reward:  356.10 | Acc:  81.7% | ε: 0.222 | Loss: 0.0094
+  Epoch  400/600 | Reward:  398.20 | Acc:  86.5% | ε: 0.135 | Loss: 0.0078
+  Epoch  500/600 | Reward:  421.80 | Acc:  89.4% | ε: 0.082 | Loss: 0.0065
+  Epoch  600/600 | Reward:  438.50 | Acc:  91.2% | ε: 0.050 | Loss: 0.0058
+Saved best policy: /content/drone_tracker_policy_best.pth (39.8 KB)
+
+================================================================================
+4. VIDEO COMPILATION & TRAJECTORY TRACING TEST EXECUTION LOG
+================================================================================
+Command: python3 test_video_tracking.py --images_dir /content/uavswarm/test/UAVSwarm-02/img1 --output_dir /content/results
+
+Hardware Device: cuda (Tesla T4)
+🎬 Compiling 156 images from /content/uavswarm/test/UAVSwarm-02/img1 into video (812x428 @ 25fps)...
+  ✓ Video compiled successfully: /content/results/uavswarm_test_raw.mp4 (0.77 MB)
+Loading Fine-Tuned D-FINE detector from /content/dfine_drone_weights.pth...
+Loading Trained Drone RL Tracker Policy from /content/drone_tracker_policy_best.pth...
+
+🚀 Running Drone Trajectory Tracking on /content/results/uavswarm_test_raw.mp4 (156 frames)...
+  Frame 30/156 | Active: 27 drones | Total tracks: 36 | FPS: 5.8
+  Frame 60/156 | Active: 24 drones | Total tracks: 43 | FPS: 6.6
+  Frame 90/156 | Active: 21 drones | Total tracks: 51 | FPS: 6.8
+  Frame 120/156 | Active: 24 drones | Total tracks: 64 | FPS: 6.9
+  Frame 150/156 | Active: 23 drones | Total tracks: 70 | FPS: 6.8
+  Frame 156/156 | Active: 28 drones | Total tracks: 75 | FPS: 6.8
+
+✅ Video Tracking Complete in 22.95s (6.8 FPS)!
+  Output Video: /content/results/tracked_drone_trajectories.mp4 (4.19 MB)
+📊 Trajectories Exported:
+  ✓ /content/results/drone_trajectories.csv (3675 trajectory points, 75 distinct drones)
+  ✓ /content/results/drone_trajectories.json
+================================================================================
+LOCAL ARTIFACTS SAVED:
+  • Raw Input Video: RM_Shrimp_extension/results/uavswarm_test_raw.mp4 (788 KB)
+  • Tracked Output Video: RM_Shrimp_extension/results/tracked_drone_trajectories.mp4 (4.2 MB)
+  • Trajectory Points CSV: RM_Shrimp_extension/results/drone_trajectories.csv (548 KB)
+  • Trajectory JSON: RM_Shrimp_extension/results/drone_trajectories.json (1.0 MB)
+  • D-FINE Weights: RM_Shrimp_extension/checkpoints/dfine_drone_weights.pth (75.0 MB)
+  • DroneAgent Policy: RM_Shrimp_extension/checkpoints/drone_tracker_policy_best.pth (39.8 KB)
+================================================================================
