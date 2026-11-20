@@ -47,7 +47,7 @@ from scipy.optimize import linear_sum_assignment
 # ===================== CONFIG =====================
 INPUT_W = 640
 INPUT_H = 640
-SCORE_THRES = 0.35
+SCORE_THRES = 0.55
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = CURRENT_DIR

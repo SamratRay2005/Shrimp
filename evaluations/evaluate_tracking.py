@@ -6,15 +6,17 @@ Evaluates DroneRLTracker (from run2.py) and 3 controlled baselines across all 36
 official UAVSwarm test sequences using strictly isolated ground-truth per-frame
 detections (track IDs stripped, detections deterministically shuffled per frame).
 
-Outputs saved to evaluations/:
-  - per_sequence_metrics.csv          (36 sequences for DroneRLTracker)
-  - per_sequence_all_methods.csv      (36 sequences x 4 trackers)
-  - ablation_summary.csv              (36-seq & 4-seq aggregate metrics)
-  - detailed_results.json             (complete structured telemetry + metadata)
-  - predictions_mot/<seq>.txt         (MOT16 predictions for DroneRLTracker)
-  - plots/ablation_comparison.png
-  - plots/per_sequence_scores.png
-  - plots/failure_and_scaling_analysis.png
+Outputs saved to evaluations/results/:
+  - results/tier_a/per_sequence_metrics.csv          (36 sequences for DroneRLTracker)
+  - results/tier_a/per_sequence_all_methods.csv      (36 sequences x 4 trackers)
+  - results/tier_a/ablation_summary.csv              (36-seq & 4-seq aggregate metrics)
+  - results/tier_a/subset_06_28_30_46_summary.csv
+  - results/tier_a/subset_06_28_30_46_per_sequence.csv
+  - results/tier_a/detailed_results.json             (complete structured telemetry + metadata)
+  - results/predictions/mot_oracle/<seq>.txt         (MOT16 predictions for DroneRLTracker)
+  - results/plots/ablation_comparison.png
+  - results/plots/per_sequence_scores.png
+  - results/plots/failure_and_scaling_analysis.png
 """
 
 import os
@@ -63,9 +65,12 @@ from mot_metrics import (
 
 
 EVAL_DIR = Path(__file__).resolve().parent
-GT_ROOT = EVAL_DIR / "uavswarm_test_gt"
-PRED_MOT_DIR = EVAL_DIR / "predictions_mot"
-PLOTS_DIR = EVAL_DIR / "plots"
+DATA_DIR = EVAL_DIR / "data"
+RESULTS_DIR = EVAL_DIR / "results"
+TIER_A_DIR = RESULTS_DIR / "tier_a"
+GT_ROOT = DATA_DIR / "uavswarm_test_gt"
+PRED_MOT_DIR = RESULTS_DIR / "predictions" / "mot_oracle"
+PLOTS_DIR = RESULTS_DIR / "plots"
 POLICY_PATH = REPO_ROOT / "checkpoints" / "drone_tracker_policy_best.pth"
 LOCAL_SUBSET = {"UAVSwarm-02", "UAVSwarm-04", "UAVSwarm-08", "UAVSwarm-14"}
 TARGET_SUBSET_06_28_30_46 = {"UAVSwarm-06", "UAVSwarm-28", "UAVSwarm-30", "UAVSwarm-46"}
@@ -519,7 +524,7 @@ def trajectories_to_pred_frames(trajectories: dict, min_len: int = 2) -> Dict[in
 
 
 def write_mot_predictions(seq_name: str, trajectories: dict, min_len: int = 2):
-    """Write standard MOT16 prediction file to evaluations/predictions_mot/."""
+    """Write standard MOT16 prediction file to evaluations/results/predictions/mot_oracle/."""
     rows = []
     for tid, pts in trajectories.items():
         if len(pts) < min_len:
@@ -808,6 +813,7 @@ def generate_plots(summary_df: pd.DataFrame, all_rows_df: pd.DataFrame):
 def main():
     PRED_MOT_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    TIER_A_DIR.mkdir(parents=True, exist_ok=True)
 
     seq_dirs = sorted([d for d in GT_ROOT.iterdir() if d.is_dir()])
     print(f"Found {len(seq_dirs)} official UAVSwarm test sequences in {GT_ROOT}")
@@ -926,22 +932,22 @@ def main():
     subset_summary_df = summary_df[summary_df['split'] == 'Subset_06_28_30_46'].copy()
     subset_per_seq_df = all_rows_df[all_rows_df['sequence'].isin(TARGET_SUBSET_06_28_30_46)].copy()
 
-    ours_only_df.to_csv(EVAL_DIR / "per_sequence_metrics.csv", index=False)
-    all_rows_df.to_csv(EVAL_DIR / "per_sequence_all_methods.csv", index=False)
-    summary_df.to_csv(EVAL_DIR / "ablation_summary.csv", index=False)
-    subset_summary_df.to_csv(EVAL_DIR / "subset_06_28_30_46_summary.csv", index=False)
-    subset_per_seq_df.to_csv(EVAL_DIR / "subset_06_28_30_46_per_sequence.csv", index=False)
+    ours_only_df.to_csv(TIER_A_DIR / "per_sequence_metrics.csv", index=False)
+    all_rows_df.to_csv(TIER_A_DIR / "per_sequence_all_methods.csv", index=False)
+    summary_df.to_csv(TIER_A_DIR / "ablation_summary.csv", index=False)
+    subset_summary_df.to_csv(TIER_A_DIR / "subset_06_28_30_46_summary.csv", index=False)
+    subset_per_seq_df.to_csv(TIER_A_DIR / "subset_06_28_30_46_per_sequence.csv", index=False)
 
     detailed_out['summary'] = summary_rows
     detailed_out['per_sequence_ours'] = ours_only_df.to_dict(orient='records')
-    with open(EVAL_DIR / "detailed_results.json", "w") as f:
+    with open(TIER_A_DIR / "detailed_results.json", "w") as f:
         json.dump(detailed_out, f, indent=2)
 
     # Generate plots (exclude diagnostic min_len=1 row from ablation plot)
     plot_summary_df = summary_df[summary_df['method'].isin(method_names)].copy()
     generate_plots(plot_summary_df, all_rows_df)
 
-    print(f"\nSaved all evaluation artifacts to {EVAL_DIR}")
+    print(f"\nSaved all Tier-A evaluation artifacts to {TIER_A_DIR} and {RESULTS_DIR}")
 
 
 if __name__ == "__main__":

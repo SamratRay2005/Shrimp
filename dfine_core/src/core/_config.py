@@ -4,7 +4,7 @@ Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
 
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
 
 import torch
 import torch.nn as nn
@@ -12,7 +12,11 @@ from torch.cuda.amp.grad_scaler import GradScaler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
+
+if TYPE_CHECKING:
+    from torch.utils.tensorboard import SummaryWriter
+else:
+    SummaryWriter = Any
 
 __all__ = [
     "BaseConfig",
@@ -280,15 +284,17 @@ class BaseConfig(object):
     @property
     def writer(self) -> SummaryWriter:
         if self._writer is None:
+            from torch.utils.tensorboard import SummaryWriter as _SummaryWriter
             if self.summary_dir:
-                self._writer = SummaryWriter(self.summary_dir)
+                self._writer = _SummaryWriter(self.summary_dir)
             elif self.output_dir:
-                self._writer = SummaryWriter(Path(self.output_dir) / "summary")
+                self._writer = _SummaryWriter(Path(self.output_dir) / "summary")
         return self._writer
 
     @writer.setter
     def writer(self, m):
-        assert isinstance(m, SummaryWriter), f"{type(m)} must be SummaryWriter"
+        from torch.utils.tensorboard import SummaryWriter as _SummaryWriter
+        assert isinstance(m, _SummaryWriter), f"{type(m)} must be SummaryWriter"
         self._writer = m
 
     def __repr__(self):

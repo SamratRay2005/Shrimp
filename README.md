@@ -4,7 +4,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![ONNX Runtime](https://img.shields.io/badge/ONNX-Runtime-brightgreen.svg)](https://onnxruntime.ai/)
 [![D-FINE](https://img.shields.io/badge/Model-D--FINE--HGNetv2--M-green.svg)](https://github.com/Peterande/D-FINE)
-[![YOLOX](https://img.shields.io/badge/Model-YOLOX--S--Finetuned-blue.svg)](https://github.com/Megvii-BaseDetection/YOLOX)
+[![YOLOX](https://img.shields.io/badge/Model-YOLOX--M--Finetuned-blue.svg)](https://github.com/Megvii-BaseDetection/YOLOX)
 [![Benchmark](https://img.shields.io/badge/Dataset-UAVSwarm-orange.svg)](https://github.com/UAVSwarm/UAVSwarm-dataset)
 
 An autonomous multi-target drone tracking and spatial trajectory tracing system. Adapted from the **Shrimp RL Tracker** architecture ([SamratRay2005/Shrimp](https://github.com/SamratRay2005/Shrimp)) and substantially redesigned for **high-density aerial drone swarms** under the [UAVSwarm benchmark](https://github.com/UAVSwarm/UAVSwarm-dataset).
@@ -17,9 +17,9 @@ In dense multi-UAV swarms, drones fly in close proximity ($60\text{--}90\text{ p
 
 This system addresses these challenges through a coupled detection, dynamic physical gating, and reinforcement learning framework:
 
-1. **Dual Fine-Tuned Object Detectors (D-FINE & YOLOX)**:
-   * **D-FINE HGNetv2-M Transformer**: $\text{AP}_{50} = 92.62\%$, providing robust global context and high-confidence box filtering.
-   * **Fine-Tuned YOLOX-S**: $\text{mAP} = \mathbf{53.44\%}$, $\text{AP}_{50} = \mathbf{94.0\%}$, $\text{AP}_{\text{small}} = \mathbf{52.2\%}$, running at **$81+$ FPS** on GPU ($12.3\text{ ms}$ latency) with tightly fit bounding boxes ($\text{AP}_{75} = 52.9\%$).
+1. **Dual Cloud Fine-Tuned Object Detectors (D-FINE-M & YOLOX-M, `640×640`)**:
+   * **Fine-Tuned D-FINE HGNetv2-M**: Unseen official 5,754-frame test $\text{AP}_{50} = \mathbf{92.86\%}$, $\text{mAP} = \mathbf{48.94\%}$, $\text{AP}_{75} = \mathbf{46.14\%}$, $\text{AP}_{\text{small}} = \mathbf{46.47\%}$ ($28.8\text{ FPS}$ on NVIDIA L4, `conf=0.55`).
+   * **Fine-Tuned YOLOX-M**: Unseen official 5,754-frame test $\text{AP}_{50} = 90.28\%$, $\text{mAP} = 44.84\%$, $\text{AP}_{\text{small}} = 42.07\%$, running **$2\times$ faster at $57.0\text{ FPS}$** on NVIDIA L4 ($17.5\text{ ms}$ latency, `conf=0.50`).
 2. **Velocity-Adaptive Dynamic Gating**: A kinematic search envelope $R_{\text{dynamic}} \in [20, 65]\text{ px}$ that contracts to $20\text{ px}$ during hovering (physically sealing out adjacent swarm drones) and expands up to $65\text{ px}$ during high-speed accelerations.
 3. **Deep Q-Network (RL) Data Association**: A learned 5-feature spatial-temporal policy (`DroneQNetwork`) trained with hard-negative swarm clutter to predict candidate matching scores.
 4. **Global Optimal Bipartite Association**: Formulates swarm association as a minimum-weight bipartite matching problem solved globally via the Hungarian algorithm (`scipy.optimize.linear_sum_assignment`).
@@ -38,10 +38,10 @@ This repository provides three parallel evaluation pipelines to benchmark detect
              ▼                               ▼                               ▼
       [ Pipeline 1 ]                  [ Pipeline 2 ]                  [ Pipeline 3 ]
          run.py                          run2.py                         run3.py
-  (Fine-Tuned D-FINE)           (Ground Truth Detection)           (Fine-Tuned YOLOX)
+  (Fine-Tuned D-FINE-M)         (Ground Truth Detection)        (Fine-Tuned YOLOX-M)
              │                               │                               │
-   HGNetv2-M Transformer          Anonymous GT BBoxes Only        YOLOX-S ONNX (Runtime/Bench)
-  AP50: 92.6% | Latency: 25ms    Per-frame shuffled boxes         AP50: 94.0% | Latency: 12ms
+   HGNetv2-M (`conf=0.55`)        Anonymous GT BBoxes Only        YOLOX-M ONNX (`conf=0.50`)
+  AP50: 92.9% | Latency: 34.8ms  Per-frame shuffled boxes         AP50: 90.3% | Latency: 17.5ms
              │                               │                               │
              └───────────────────────┬───────┴───────────────────────────────┘
                                      │
@@ -72,21 +72,20 @@ This repository provides three parallel evaluation pipelines to benchmark detect
 
 ## 📊 Comprehensive Detector Benchmark Comparison
 
-Evaluated on the exact same official UAVSwarm benchmark validation split (3,394 images across 36 test sequences, 24,265 drone ground-truth annotations):
+Trained with strict zero test-set leakage (`train_85`: 5,805 train images; `val_15`: 1,039 images for checkpoint & threshold selection) and evaluated once on the **official unseen UAVSwarm test split (`5,754` images across `36` test sequences, `37,703` COCO annotations)** on NVIDIA L4 (24 GB):
 
-| Performance Dimension | Our Fine-Tuned D-FINE (HGNetv2-M) | Our Fine-Tuned YOLOX (YOLOX-S) | Difference / Winner |
+| Performance Dimension | Fine-Tuned D-FINE (`HGNetv2-M`) | Fine-Tuned YOLOX (`YOLOX-M 640×640`) | Difference / Winner |
 | :--- | :---: | :---: | :---: |
 | **Detector Architecture** | Hybrid Transformer (CNN + Attention) | Anchor-Free Decoupled CNN | Different trade-offs |
-| **Model Parameters** | 19.19 M | **8.94 M** | **YOLOX is 53% lighter** |
-| **Checkpoint Size** | 313.5 MB | **35.85 MB (ONNX)** | **YOLOX is 9× smaller** |
-| **Inference Latency (T4 GPU)**| 25.5 ms / frame ($\sim 39$ FPS) | **12.3 ms / frame ($\sim 81$ FPS)** | **YOLOX is > 2× faster** |
-| **$\text{AP}_{50}$ (Drone Detection)**| 92.6% | **94.0%** | **YOLOX (+1.4%)** |
-| **$\text{AP}_{75}$ (Strict Localization)**| 42.8% | **52.9%** | **YOLOX (+10.1%)** |
-| **$\text{AP}_{\text{small}}$ (Drones $< 32\text{px}$)**| 46.0% | **52.2%** | **YOLOX (+6.2%)** |
-| **$\text{AP}_{\text{medium}}$ ($32\text{--}96\text{px}$)**| 63.6% | **64.7%** | **YOLOX (+1.1%)** |
-| **Overall mAP @ [0.50:0.95]**| 48.2% | **53.44%** | **YOLOX (+5.24%)** |
-| **Operational Recall ($\text{IoU}=0.50$)**| **96.0%** | 93.8% | **D-FINE (+2.2%)** |
-| **Precision** | **92.0%** | 91.5% | **D-FINE (+0.5%)** |
+| **Checkpoint / Artifact Size** | **78.57 MB (EMA `.pth`)** | 101.20 MB (ONNX) | **D-FINE is 22% smaller** |
+| **Inference Latency (L4 GPU)** | 34.76 ms / frame (28.77 FPS) | **17.53 ms / frame (57.03 FPS)** | **YOLOX-M is 2.0× faster** |
+| **$\text{AP}_{50}$ (Official Test)** | **92.86%** | 90.28% | **D-FINE (+2.58%)** |
+| **$\text{AP}_{75}$ (Strict Localization)** | **46.14%** | 38.12% | **D-FINE (+8.02%)** |
+| **$\text{AP}_{\text{small}}$ (Drones $< 32\text{px}$)** | **46.47%** | 42.07% | **D-FINE (+4.40%)** |
+| **$\text{AP}_{\text{medium}}$ ($32\text{--}96\text{px}$)** | **60.84%** | 56.51% | **D-FINE (+4.33%)** |
+| **Overall mAP @ `[0.50:0.95]`** | **48.94%** | 44.84% | **D-FINE (+4.10%)** |
+| **$\text{AR}@100$ (Official Test)** | **59.94%** | 51.50% | **D-FINE (+8.44%)** |
+| **Locked `val_15` Threshold / F1** | `conf = 0.55` (`F1 = 94.25%`) | `conf = 0.50` (**`F1 = 96.62%`**) | Both leak-free on `val_15` |
 
 ---
 
@@ -131,8 +130,8 @@ RM_Shrimp_extension/
 ├── run3.py                          # Pipeline 3: Live YOLOX detection / benchmark + RL tracking
 │
 ├── checkpoints/                     # Model weights & policies
-│   ├── dfine_drone_weights.pth      # Fine-tuned D-FINE detector weights (313 MB)
-│   ├── yolox_drone_finetuned.onnx   # Fine-tuned YOLOX-S ONNX model (35.8 MB, 8.94M params)
+│   ├── dfine_drone_weights.pth      # Fine-tuned D-FINE-M EMA weights (78.57 MB)
+│   ├── yolox_drone_finetuned.onnx   # Fine-tuned YOLOX-M ONNX model (101.20 MB)
 │   ├── yolox_s.onnx                 # Pretrained COCO baseline (34.5 MB)
 │   └── drone_tracker_policy_best.pth# Trained RL association policy (39.8 KB)
 │
@@ -168,11 +167,26 @@ RM_Shrimp_extension/
 │
 ├── dfine_core/                      # D-FINE model architecture & configs
 │
+├── evaluations/                     # Organized 36-sequence benchmarks & strategy ablations
+│   ├── mot_metrics.py               # Unit-tested CLEAR MOT, IDF1 & HOTA evaluators
+│   ├── evaluate_tracking.py         # Tier-A oracle-box benchmark & ablations
+│   ├── evaluate_end_to_end.py       # Tier-B D-FINE-M / YOLOX-M end-to-end benchmark
+│   ├── results.md                   # Full Tier-A/D/B & cost-strategy report
+│   ├── data/                        # uavswarm_test_gt/, detections_dfine/, detections_yolox/
+│   ├── results/                     # tier_a/, tier_b/, predictions/, plots/
+│   └── testing_different_stratergies/
+│       ├── evaluate_neg_q.py
+│       ├── evaluate_neg_q_over_d.py
+│       ├── evaluate_d_over_q.py
+│       └── results/                 # Strategy CSV & JSON comparisons
+│
+├── comparision.md                   # 14-paper (2022–2026) UAVSwarm literature benchmark
+│
 └── notebooks/                       # Colab GPU fine-tuning pipelines
     ├── 01_dataset_preparation.py    # UAVSwarm COCO conversion
     ├── 02_dfine_finetune.py         # D-FINE HGNetv2-M fine-tuning
     ├── 03_rl_agent_training.py      # RL Q-Network agent training
-    └── 04_yolox_finetune.py         # YOLOX-S fine-tuning & ONNX export
+    └── 04_yolox_finetune.py         # YOLOX-M fine-tuning & ONNX export
 ```
 
 ---
@@ -239,7 +253,17 @@ When running with the live display active:
 
 ## 📈 Empirical Tracking Benchmarks
 
-Evaluated on official test sequences using our RL Tracker:
+### 36-Sequence Official UAVSwarm Benchmark Summary (`5,754` Frames, `325` GT Tracks, `37,947` Boxes)
+Full per-sequence tables, ablation studies, and literature comparisons across 14 published papers (2022–2026) are documented in [evaluations/results.md](evaluations/results.md) and [comparision.md](comparision.md):
+
+| Pipeline / Tier | Detector | MOTA (%) ↑ | HOTA (%) ↑ | IDF1 (%) ↑ | IDSW ↓ | Avg Purity (%) ↑ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Tier A (Oracle Tracking, `run2.py`)** | Shuffled GT boxes | **99.84** | **97.14** | **96.12** | 44 | **99.32** |
+| **Tier B (End-to-End, `run.py`)** | **`D-FINE-M (640, conf=0.55)`** | **82.87** | **68.12** | 86.91 | 96 | **99.43** |
+| **Tier B (End-to-End, `run3.py`)** | **`YOLOX-M (640, conf=0.50)`** | 81.94 | 66.85 | **87.18** | **54** | 99.42 |
+
+### Sample Sequence Telemetry (`run2.py` / `results/`)
+Evaluated on the 4 sample test sequences using our RL Tracker:
 
 | Sequence | Resolution | Frames | Actual Swarm Size | Mean Active Swarm (Detected) | Persistent Tracks | Trajectory Coordinates Traced |
 |---|---|---|---|---|---|---|

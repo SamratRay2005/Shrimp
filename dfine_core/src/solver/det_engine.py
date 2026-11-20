@@ -8,13 +8,17 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 
 import math
 import sys
-from typing import Dict, Iterable, List
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List
 
 import numpy as np
 import torch
 import torch.amp
 from torch.cuda.amp.grad_scaler import GradScaler
-from torch.utils.tensorboard import SummaryWriter
+
+if TYPE_CHECKING:
+    from torch.utils.tensorboard import SummaryWriter
+else:
+    SummaryWriter = Any
 
 from ..data import CocoEvaluator
 from ..data.dataset import mscoco_category2label

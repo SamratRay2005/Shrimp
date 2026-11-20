@@ -76,7 +76,7 @@ class RuntimeYOLOXDetector:
     Live runtime object detector powered by the YOLOX neural network architecture (ONNX Runtime).
     Runs real-time forward-pass inference on raw incoming video frames.
     """
-    def __init__(self, model_path: str = DEFAULT_YOLOX_WEIGHTS, conf_thresh: float = 0.05,
+    def __init__(self, model_path: str = DEFAULT_YOLOX_WEIGHTS, conf_thresh: float = 0.50,
                  nms_thresh: float = 0.45, input_shape: tuple = (640, 640)):
         import onnxruntime as ort
 
@@ -85,11 +85,14 @@ class RuntimeYOLOXDetector:
 
         print(f"📦 Initializing live runtime YOLOX neural network detector: {model_path}")
         self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        self.input_name = self.session.get_inputs()[0].name
+        inp_meta = self.session.get_inputs()[0]
+        self.input_name = inp_meta.name
+        if len(inp_meta.shape) == 4 and isinstance(inp_meta.shape[2], int) and isinstance(inp_meta.shape[3], int):
+            input_shape = (int(inp_meta.shape[2]), int(inp_meta.shape[3]))
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
         self.input_shape = input_shape
-        print(f"✅ YOLOX live runtime detector ready (input: {input_shape[0]}x{input_shape[1]}, conf >= {conf_thresh}).")
+        print(f"✅ YOLOX live runtime detector ready (input: {self.input_shape[0]}x{self.input_shape[1]}, conf >= {conf_thresh}).")
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int = 0) -> list:
         h, w = frame_bgr.shape[:2]
@@ -464,7 +467,7 @@ def main():
     parser.add_argument("--weights", type=str, default=DEFAULT_YOLOX_WEIGHTS, help="Path to YOLOX model weights (.onnx)")
     parser.add_argument("--det", type=str, default="", help="Path to YOLOX detection file (det.txt for benchmark mode)")
     parser.add_argument("--policy", type=str, default=DEFAULT_POLICY, help="Path to our trained RL policy checkpoint (.pth)")
-    parser.add_argument("--conf", type=float, default=0.05, help="Detection confidence threshold")
+    parser.add_argument("--conf", type=float, default=0.50, help="Detection confidence threshold")
     parser.add_argument("--output", type=str, default="", help="Path to output tracked video MP4")
     parser.add_argument("--csv", type=str, default="", help="Path to output trajectory CSV")
     parser.add_argument("--json", type=str, default="", help="Path to output trajectory JSON")

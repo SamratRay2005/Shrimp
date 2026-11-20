@@ -1,0 +1,123 @@
+{
+  "model": "YOLOX-M (640x640)",
+  "pretrained_init": "yolox_m.pth",
+  "input_size": [
+    640,
+    640
+  ],
+  "gpu": "NVIDIA L4",
+  "max_epoch": 20,
+  "no_aug_epochs": 5,
+  "train_minutes": 47.6,
+  "onnx_size_bytes": 101202814,
+  "onnx_md5": "c6a9097d1f490a912c8fa62c774589fe",
+  "onnx_vs_pytorch_max_diff": 22.8896484375,
+  "val_15_metrics": {
+    "AP": 0.6784409855281478,
+    "AP50": 0.9682116657151697,
+    "AP75": 0.7874157504596302,
+    "AP_small": 0.6740247965686521,
+    "AP_medium": 0.740008188782424,
+    "AP_large": 0.5321823772936936,
+    "AR_1": 0.11172984148862852,
+    "AR_10": 0.6262026188835286,
+    "AR_100": 0.7192281185389386
+  },
+  "val_15_conf_sweep": [
+    {
+      "conf_thresh": 0.1,
+      "tp": 7066,
+      "fp": 459,
+      "fn": 189,
+      "precision": 0.939,
+      "recall": 0.9739,
+      "f1": 0.9562
+    },
+    {
+      "conf_thresh": 0.15,
+      "tp": 7055,
+      "fp": 413,
+      "fn": 200,
+      "precision": 0.9447,
+      "recall": 0.9724,
+      "f1": 0.9584
+    },
+    {
+      "conf_thresh": 0.2,
+      "tp": 7052,
+      "fp": 392,
+      "fn": 203,
+      "precision": 0.9473,
+      "recall": 0.972,
+      "f1": 0.9595
+    },
+    {
+      "conf_thresh": 0.25,
+      "tp": 7046,
+      "fp": 365,
+      "fn": 209,
+      "precision": 0.9507,
+      "recall": 0.9712,
+      "f1": 0.9609
+    },
+    {
+      "conf_thresh": 0.3,
+      "tp": 7041,
+      "fp": 347,
+      "fn": 214,
+      "precision": 0.953,
+      "recall": 0.9705,
+      "f1": 0.9617
+    },
+    {
+      "conf_thresh": 0.35,
+      "tp": 7037,
+      "fp": 323,
+      "fn": 218,
+      "precision": 0.9561,
+      "recall": 0.97,
+      "f1": 0.963
+    },
+    {
+      "conf_thresh": 0.4,
+      "tp": 7035,
+      "fp": 312,
+      "fn": 220,
+      "precision": 0.9575,
+      "recall": 0.9697,
+      "f1": 0.9636
+    },
+    {
+      "conf_thresh": 0.45,
+      "tp": 7029,
+      "fp": 288,
+      "fn": 226,
+      "precision": 0.9606,
+      "recall": 0.9688,
+      "f1": 0.9647
+    },
+    {
+      "conf_thresh": 0.5,
+      "tp": 7022,
+      "fp": 258,
+      "fn": 233,
+      "precision": 0.9646,
+      "recall": 0.9679,
+      "f1": 0.9662
+    }
+  ],
+  "selected_conf_thresh_val15": 0.5,
+  "test_official_metrics": {
+    "AP": 0.4484060640792853,
+    "AP50": 0.902776163814515,
+    "AP75": 0.38123395173311037,
+    "AP_small": 0.42070328658060435,
+    "AP_medium": 0.5651004519870049,
+    "AP_large": 0.6039024409942858,
+    "AR_1": 0.0898018725300374,
+    "AR_10": 0.44197543962018926,
+    "AR_100": 0.5150492003288863
+  },
+  "test_batch1_fps_gpu": 57.03,
+  "test_batch1_latency_ms_gpu": 17.53
+}
